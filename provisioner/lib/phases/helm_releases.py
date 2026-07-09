@@ -69,8 +69,16 @@ class HelmReleasesPhase(Phase):
             raise BootstrapError("helm_releases", {"chart": chart_name, "reason": "missing version/repo"})
 
         values_file = ctx.repo_root / "values" / f"{chart_name.replace('_', '-')}.yaml"
+        # Helm release names must be lowercase + dashes + dots only
+        # (no underscores). The lockfile key uses underscores (e.g.
+        # "proxmox_cloud_controller_manager") to be
+        # Python-identifier friendly; the release name in the
+        # cluster uses the chart's published name with dashes
+        # ("proxmox-cloud-controller-manager"). Both refer to the
+        # same release once installed.
+        release_name = chart_name.replace("_", "-")
         cmd: list[str] = [
-            "helm", "upgrade", "--install", chart_name,
+            "helm", "upgrade", "--install", release_name,
             repo,
             "--version", version,
             "--namespace", _namespace_for(chart_name),
@@ -89,7 +97,7 @@ class HelmReleasesPhase(Phase):
                 "--set", "ingressClass.name=cloudflare-tunnel",
             ]
 
-        ctx.logger.info(step="helm_install_start", chart=chart_name, version=version)
+        ctx.logger.info(step="helm_install_start", chart=chart_name, release_name=release_name, version=version)
         import os
         import subprocess
         # Pin KUBECONFIG to the tunnel-aware kubeconfig (same
