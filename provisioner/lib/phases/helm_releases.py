@@ -143,7 +143,7 @@ class HelmReleasesPhase(Phase):
         # IP).
         env = {**os.environ, "KUBECONFIG": str(ctx.cluster_dir / "kubeconfig.yaml")}
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
         except subprocess.TimeoutExpired as exc:
             raise BootstrapError("helm_releases", {"chart": chart_name, "reason": "helm install timed out (300s)"}) from exc
         if result.returncode != 0:

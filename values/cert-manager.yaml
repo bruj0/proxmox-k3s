@@ -3,7 +3,7 @@
 # Rendered via:
 #   helm upgrade --install cert-manager \
 #     oci://quay.io/jetstack/charts/cert-manager \
-#     --version v1.16.2 \
+#     --version 1.20.3 \
 #     -n cert-manager \
 #     --create-namespace \
 #     -f values/cert-manager.yaml
@@ -53,5 +53,4 @@ config:
 #    ServerSideApply=true: cert-manager applies Certificate +
 #    CertificateRequest objects via SSA so concurrent reconciles
 #    don't fight over annotations.
-featureGates: ""
-defaultFeatureGates: "ServerSideApply=true"
+featureGates: "ServerSideApply=true"
