@@ -167,7 +167,7 @@ def test_ssh_probe_phase_records_remote_calls(fake_container: Container) -> None
     # 2 probes per node × 2 nodes = 4 SSH calls.
     assert len(remote.calls) == 4
     targets = {c["target"] for c in remote.calls}
-    assert targets == {"ubuntu@10.0.0.64", "ubuntu@10.0.0.65"}
+    assert targets == {"10.0.0.64", "10.0.0.65"}
 
 
 def test_apiserver_ready_phase_uses_ssh_only(fake_container: Container) -> None:
@@ -181,18 +181,18 @@ def test_apiserver_ready_phase_uses_ssh_only(fake_container: Container) -> None:
     assert isinstance(remote, FakeRemoteExecutor)
     # Queue realistic responses for the 3 SSH calls the phase makes.
     remote.queue(
-        "ubuntu@10.0.0.64", "systemctl is-active k3s",
+        "10.0.0.64", "systemctl is-active k3s",
         RemoteResult(stdout="active\n", stderr="", exit_code=0),
     )
     remote.queue(
-        "ubuntu@10.0.0.64", "sudo ss -tlnp",
+        "10.0.0.64", "sudo ss -tlnp",
         RemoteResult(
             stdout='LISTEN 0 4096 *:6443 *:* users:(("k3s-server",pid=1,fd=12))\n',
             stderr="", exit_code=0,
         ),
     )
     remote.queue(
-        "ubuntu@10.0.0.64", "curl",
+        "10.0.0.64", "curl",
         RemoteResult(stdout="ok\n", stderr="", exit_code=0),
     )
     phase = ApiserverReadyPhase()
@@ -202,7 +202,7 @@ def test_apiserver_ready_phase_uses_ssh_only(fake_container: Container) -> None:
     # 3 SSH calls: is-active, ss -tlnp, curl /healthz
     assert len(remote.calls) == 3
     targets = {c["target"] for c in remote.calls}
-    assert targets == {"ubuntu@10.0.0.64"}  # only the first CP
+    assert targets == {"10.0.0.64"}  # only the first CP
 
 
 def test_apiserver_ready_phase_raises_when_service_down(fake_container: Container) -> None:
@@ -339,11 +339,11 @@ def test_orchestrator_runs_phases_in_dep_order(fake_container: Container) -> Non
     # apiserver_ready now uses SSH (not probe), so queue realistic responses.
     remote = fake_container.remote
     assert isinstance(remote, FakeRemoteExecutor)
-    remote.queue("ubuntu@10.0.0.64", "systemctl is-active k3s",
+    remote.queue("10.0.0.64", "systemctl is-active k3s",
                  RemoteResult(stdout="active\n", stderr="", exit_code=0))
-    remote.queue("ubuntu@10.0.0.64", "sudo ss -tlnp",
+    remote.queue("10.0.0.64", "sudo ss -tlnp",
                  RemoteResult(stdout="LISTEN 0 4096 *:6443 *:*\n", stderr="", exit_code=0))
-    remote.queue("ubuntu@10.0.0.64", "curl",
+    remote.queue("10.0.0.64", "curl",
                  RemoteResult(stdout="ok\n", stderr="", exit_code=0))
     ssh = SshProbePhase().run(fake_container)
     api = ApiserverReadyPhase().run(fake_container)
@@ -357,7 +357,7 @@ def test_orchestrator_phase_failure_raises(fake_container: Container, tmp_path: 
     # Make k3s.service return inactive so apiserver_ready raises.
     remote = fake_container.remote
     assert isinstance(remote, FakeRemoteExecutor)
-    remote.queue("ubuntu@10.0.0.64", "systemctl is-active k3s",
+    remote.queue("10.0.0.64", "systemctl is-active k3s",
                  RemoteResult(stdout="inactive\n", stderr="", exit_code=3))
     with pytest.raises(BootstrapError):
         run(fake_container, selected_phases=("apiserver_ready",))

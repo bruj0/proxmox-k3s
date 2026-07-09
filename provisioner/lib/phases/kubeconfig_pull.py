@@ -40,7 +40,8 @@ class KubeconfigPullPhase(Phase):
             raise BootstrapError("kubeconfig_pull", {"reason": "no control plane"})
 
         cp = topo.control_plane[0]
-        target = f"ubuntu@{cp.ip}"
+        # RemoteExecutor's PveSshProxy adds `ssh_user@` itself.
+        target = cp.ip
 
         # 1. Fetch the raw kubeconfig from the CP (in-cluster server: points at 127.0.0.1).
         result = ctx.remote.run(

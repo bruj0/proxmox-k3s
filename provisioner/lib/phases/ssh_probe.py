@@ -27,7 +27,7 @@ class SshProbePhase(Phase):
 
         nodes_checked: list[str] = []
         for node in topo.all_nodes:
-            target = f"ubuntu@{node.ip}"
+            target = node.ip
             # Probe 1: cloud-init status.
             r1: RemoteResult = ctx.remote.run(
                 target,

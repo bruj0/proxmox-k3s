@@ -32,7 +32,8 @@ class ApiserverReadyPhase(Phase):
             raise BootstrapError("apiserver_ready", {"reason": "no control plane"})
 
         cp = topo.control_plane[0]
-        target = f"ubuntu@{cp.ip}"
+        # RemoteExecutor's PveSshProxy adds `ssh_user@` itself.
+        target = cp.ip
 
         # 1. service must be active
         rc = ctx.remote.run(target, "systemctl is-active k3s", check=False, timeout=10.0)
