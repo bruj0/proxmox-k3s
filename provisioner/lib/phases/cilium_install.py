@@ -42,7 +42,15 @@ class CiliumInstallPhase(Phase):
             "--set", "kubeProxyReplacement=true",
             "--set", "cgroup.hostRoot=/sys/fs/cgroup",
             "--set", "cgroup.autoMount.enabled=false",
-            "--set", "gatewayAPI.enabled=true",
+            # Cilium 1.19.x's gatewayAPI controller (per
+            # cilium/cilium@v1.19.5/operator/pkg/gateway-api/cell.go)
+            # hard-requires `gateway.networking.k8s.io/v1alpha2/
+            # TLSRoute`, which Gateway API v1.3+ removed from the
+            # standard channel. The simplest fix is to disable
+            # cilium's gateway-api reconciler entirely; the
+            # envoy-gateway chart that the bootstrap installs later
+            # owns the Gateway API surface.
+            "--set", "gatewayAPI.enabled=false",
             "--set", "operator.replicas=1",
             "--set", f"ipam.operator.clusterPoolIPv4PodCIDRList={intent.pod_cidr}",
             "--set", "mtu=1450",
