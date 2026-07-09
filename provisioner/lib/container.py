@@ -222,16 +222,17 @@ class LockfileVersionsSource:
     def _default_repo_for(chart_base: str) -> str:
         """Map chart base name to its well-known Helm repo URL.
 
-        The cicd locks the repos in versions.yaml; for the
-        proxmox-k3s bootstrap we use the public registry URLs that
-        match each chart's release source (see
-        tools/versions.lock.yaml::sources).
+        Matches the cicd repo's `tools/lib/helm_client.py` registry.
+        As of late 2025, sergelogvinov moved its charts to OCI:
+        `oci://ghcr.io/sergelogvinov/charts/<chart>`. The legacy HTTP
+        index `sergelogvinov/<chart>` returns 404 now, so the OCI
+        URL is the only one that resolves.
         """
         registry = {
-            "proxmox_cloud_controller_manager": "sergelogvinov/proxmox-cloud-controller-manager",
-            "proxmox_csi_plugin": "sergelogvinov/proxmox-csi-plugin",
+            "proxmox_cloud_controller_manager": "oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager",
+            "proxmox_csi_plugin": "oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin",
             "strrl_cloudflare_tunnel_ingress_controller": "oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller",
-            "cert_manager": "oci://quay.io/jetstack/cert-manager",
+            "cert_manager": "cert-manager/cert-manager",
             "envoy_gateway": "oci://docker.io/envoyproxy/gateway-helm",
         }
         return registry.get(chart_base, "")
