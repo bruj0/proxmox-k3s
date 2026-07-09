@@ -21,6 +21,10 @@ terraform.tfvars
 terraform.tfvars.*
 output.json
 k3s.json
+# Operator-side port-forward kubeconfig (contains CA + token from the live CP)
+kubeconfig.pveproxy
+.pveproxy.state.json
+.pveproxy.state.json.tmp
 
 # OpenTofu (none in this repo, but the cluster-root directory
 # is `infra/clusters/<name>` and inherits this for safety)
