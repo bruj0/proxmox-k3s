@@ -656,7 +656,7 @@ class K3sInstaller:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=240,  # 4 min -- enough for slow dnsmasq + 100 MB download
+                timeout=600,  # 10 min -- enough for slow dnsmasq + 100 MB download
             )
         except (subprocess.CalledProcessError, OSError) as exc:
             raise K3sInstallerError(

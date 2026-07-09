@@ -169,19 +169,54 @@ def test_ssh_probe_phase_records_remote_calls(fake_container: Container) -> None
     assert targets == {"ubuntu@10.0.0.64", "ubuntu@10.0.0.65"}
 
 
-def test_apiserver_ready_phase_uses_probe(fake_container: Container) -> None:
-    """apiserver_ready uses ONLY the ClusterProbe protocol — no kubectl path."""
+def test_apiserver_ready_phase_uses_ssh_only(fake_container: Container) -> None:
+    """apiserver_ready runs BEFORE kubeconfig_pull, so it can't use
+    ClusterProbe (the kubeconfig + tunnel don't exist yet). It uses
+    ONLY RemoteExecutor (SSH) to poll the k3s service + port on the CP.
+    """
+    from provisioner.lib.protocols import RemoteResult
     from provisioner.lib.phases.apiserver_ready import ApiserverReadyPhase
+    remote = fake_container.remote
+    assert isinstance(remote, FakeRemoteExecutor)
+    # Queue realistic responses for the 3 SSH calls the phase makes.
+    remote.queue(
+        "ubuntu@10.0.0.64", "systemctl is-active k3s",
+        RemoteResult(stdout="active\n", stderr="", exit_code=0),
+    )
+    remote.queue(
+        "ubuntu@10.0.0.64", "sudo ss -tlnp",
+        RemoteResult(
+            stdout='LISTEN 0 4096 *:6443 *:* users:(("k3s-server",pid=1,fd=12))\n',
+            stderr="", exit_code=0,
+        ),
+    )
+    remote.queue(
+        "ubuntu@10.0.0.64", "curl",
+        RemoteResult(stdout="ok\n", stderr="", exit_code=0),
+    )
     phase = ApiserverReadyPhase()
     result = phase.run(fake_container)
     assert result.name == "apiserver_ready"
     assert result.changed is True
-    assert result.data["node_count"] == 0  # fake has no nodes
+    # 3 SSH calls: is-active, ss -tlnp, curl /healthz
+    assert len(remote.calls) == 3
+    targets = {c["target"] for c in remote.calls}
+    assert targets == {"ubuntu@10.0.0.64"}  # only the first CP
 
 
-def test_apiserver_ready_phase_raises_when_down(fake_container: Container) -> None:
-    fake_container.cluster_probe = FakeClusterProbe(apiserver_ok=False)
+def test_apiserver_ready_phase_raises_when_service_down(fake_container: Container) -> None:
+    """If the k3s service is not active on the CP, raise BootstrapError."""
     from provisioner.lib.phases.apiserver_ready import ApiserverReadyPhase
+    from provisioner.lib.protocols import RemoteResult
+
+    class InactiveRemote(FakeRemoteExecutor):
+        def run(self, target, command, *, check=True, timeout=15.0):
+            return RemoteResult(
+                exit_code=3,
+                stdout="inactive\n", stderr="",
+            )
+
+    fake_container.remote = InactiveRemote()
     phase = ApiserverReadyPhase()
     with pytest.raises(BootstrapError, match="apiserver_ready"):
         phase.run(fake_container)
@@ -299,6 +334,16 @@ def test_orchestrator_runs_phases_in_dep_order(fake_container: Container) -> Non
     """
     from provisioner.lib.phases.apiserver_ready import ApiserverReadyPhase
     from provisioner.lib.phases.ssh_probe import SshProbePhase
+    from provisioner.lib.protocols import RemoteResult
+    # apiserver_ready now uses SSH (not probe), so queue realistic responses.
+    remote = fake_container.remote
+    assert isinstance(remote, FakeRemoteExecutor)
+    remote.queue("ubuntu@10.0.0.64", "systemctl is-active k3s",
+                 RemoteResult(stdout="active\n", stderr="", exit_code=0))
+    remote.queue("ubuntu@10.0.0.64", "sudo ss -tlnp",
+                 RemoteResult(stdout="LISTEN 0 4096 *:6443 *:*\n", stderr="", exit_code=0))
+    remote.queue("ubuntu@10.0.0.64", "curl",
+                 RemoteResult(stdout="ok\n", stderr="", exit_code=0))
     ssh = SshProbePhase().run(fake_container)
     api = ApiserverReadyPhase().run(fake_container)
     assert ssh.name == "ssh_probe"
@@ -307,6 +352,11 @@ def test_orchestrator_runs_phases_in_dep_order(fake_container: Container) -> Non
 
 def test_orchestrator_phase_failure_raises(fake_container: Container, tmp_path: Path) -> None:
     """Phase failures bubble up as BootstrapError (M4 misfit: never swallow)."""
-    fake_container.cluster_probe = FakeClusterProbe(apiserver_ok=False)
+    from provisioner.lib.protocols import RemoteResult
+    # Make k3s.service return inactive so apiserver_ready raises.
+    remote = fake_container.remote
+    assert isinstance(remote, FakeRemoteExecutor)
+    remote.queue("ubuntu@10.0.0.64", "systemctl is-active k3s",
+                 RemoteResult(stdout="inactive\n", stderr="", exit_code=3))
     with pytest.raises(BootstrapError):
         run(fake_container, selected_phases=("apiserver_ready",))

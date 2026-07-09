@@ -12,6 +12,7 @@ dist/
 build/
 logs/
 *.audit.jsonl
+bootstrap_state.json
 
 # Secrets
 .env

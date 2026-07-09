@@ -22,6 +22,7 @@ from typing import Any
 
 from .log import StructuredLogger
 from .protocols import (
+    BootstrapError,
     ClusterProbe,
     ClusterTopology,
     OutputSink,
@@ -377,8 +378,39 @@ class Container:
     # tunnel-management helper can call into it without going through
     # the Protocol (which only exposes .run()).
     pve_proxy: PveSshProxy | None = None
+    # The live apiserver port-forward (opened by `kubeconfig_pull`,
+    # reused by every subsequent kubectl/helm call).
+    # `Any` to avoid importing `ForwardedPort` here; the field is
+    # populated only in production and is test-bypassed.
+    apiserver_tunnel: Any | None = None
     # Optional SecretLoader for chart values files (production only).
     secret_loader: SecretLoader | None = None
+
+    def open_apiserver_tunnel(self, cp_ip: str) -> Any:
+        """Idempotent: open an SSH port-forward to the CP's 6443.
+
+        The operator host cannot route to the SDN CP directly, so
+        kubectl / helm / cilium CLI calls from the bootstrap go
+        through this tunnel. Re-opening is a no-op if a tunnel is
+        already live.
+
+        Returns the `ForwardedPort` (its `.local_port` is what the
+        kubeconfig's `server:` URL points at).
+        """
+        if self.apiserver_tunnel is not None:
+            return self.apiserver_tunnel
+        if self.pve_proxy is None:
+            raise BootstrapError(
+                "apiserver_tunnel",
+                {"reason": "no PveSshProxy — production container required"},
+            )
+        self.apiserver_tunnel = self.pve_proxy.port_forward(
+            cp_ip,
+            remote_port=6443,
+            remote_bind="127.0.0.1",
+            local_port=0,  # ask proxy for a free port
+        )
+        return self.apiserver_tunnel
 
     @classmethod
     def production(
