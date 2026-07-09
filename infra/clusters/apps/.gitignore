@@ -1,0 +1,8 @@
+# Cluster root artifacts that must never be committed.
+#
+# kubeconfig.yaml contains the apiserver-tunnel endpoint for the
+# current process and would be invalid on the next bootstrap
+# (different ephemeral port). bootstrap_state.json contains the
+# runtime cache of phases_done; restart the bootstrap to rebuild.
+kubeconfig.yaml
+bootstrap_state.json
