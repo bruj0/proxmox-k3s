@@ -304,6 +304,15 @@ class K3sInstaller:
             "INSTALL_K3S_VERSION": self._versions.k3s_stable_version,
             "INSTALL_K3S_CHANNEL": self._versions.k3s_channel,
             "K3S_NODE_NAME": node_name,
+            # WP11 (2026-07-09): install.sh's `systemctl restart ${SYSTEM_NAME}`
+            # blocks on the start job completion, and kubelet stays in
+            # 'activating (start)' until a CNI plugin initialises (k3s
+            # needs the CNI to know which pod CIDR to bind). The
+            # bootstrap installs CNI later (cilium_install phase), so
+            # we tell install.sh to install + enable the unit but NOT
+            # to start it. The orchestrator starts it via
+            # `start_k3s_unit()` AFTER cilium is up.
+            "INSTALL_K3S_SKIP_START": "true",
         }
         return ServerInstallPlan(
             node_name=node_name,
@@ -369,6 +378,14 @@ class K3sInstaller:
             # boundary, but we ALSO avoid putting it on the command line --
             # we pass it via the remote shell's environment.
             "K3S_TOKEN": token,
+            # WP11 (2026-07-09): same rationale as in plan_server --
+            # `systemctl restart k3s-agent` would block indefinitely
+            # because kubelet can't initialise without a CNI, and the
+            # bootstrap installs CNI later (cilium_install phase).
+            # Skipping the start here means the unit is enabled but
+            # not running; the orchestrator issues the start via
+            # `start_k3s_unit()` AFTER cilium is up.
+            "INSTALL_K3S_SKIP_START": "true",
         }
         flags = [
             *_AGENT_BASE_FLAGS,
@@ -428,6 +445,61 @@ class K3sInstaller:
             # token deliberately not passed -> scrubbed by StructuredLogger.
         )
         self._run_upstream_install(vm, plan)
+
+    def start_k3s_unit(self, vm: Mapping[str, Any], *, role: str) -> None:
+        """Start the k3s systemd unit after CNI is installed.
+
+        WP11 (2026-07-09): install.sh was called with
+        `INSTALL_K3S_SKIP_START=true`, so the unit is enabled but
+        not running. The start job blocks on kubelet initialising,
+        which needs the CNI. The orchestrator calls this method
+        AFTER `cilium_install` succeeds — at that point the start
+        job completes immediately and the node joins the cluster.
+
+        `role` is "server" for control-plane VMs and "agent" for
+        workers. Determines which unit name to issue `systemctl
+        start` on.
+
+        Idempotent: if the unit is already `active`, this is a no-op.
+        """
+        if role not in ("server", "agent"):
+            raise K3sInstallerError(
+                "bad_role",
+                node=vm.get("name"),
+                role=role,
+                resolution="role must be 'server' or 'agent'",
+            )
+        unit = "k3s" if role == "server" else "k3s-agent"
+        ip = str(vm["ip"])
+        # `systemctl start` waits for the start job to complete.
+        # With CNI up, that takes a few seconds. We bound it
+        # generously to handle slow disks / image pulls on first
+        # node, but NOT so long that a real hang goes unnoticed.
+        cmd = self._proxy.ssh_argv(
+            ip,
+            command=f"sudo systemctl start {unit}",
+        )
+        proc = subprocess.run(  # noqa: S603
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            raise K3sInstallerError(
+                "start_failed",
+                node=vm.get("name"),
+                unit=unit,
+                returncode=proc.returncode,
+                stderr_tail=proc.stderr.strip()[-200:],
+            )
+        self.logger.info(
+            "k3s.start_unit_ok",
+            node=vm.get("name"),
+            unit=unit,
+            role=role,
+        )
 
     def read_node_token(self, server_vm: Mapping[str, Any]) -> str:
         """Fetch the join token from the control-plane VM.

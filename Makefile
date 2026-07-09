@@ -43,20 +43,23 @@ help:
 	@echo "  clean           -- remove build/ + logs/ + audit files"
 
 plan:
-	@$(PYTHON) -m provisioner plan $(CLUSTER) \
-		--proxmox-vms-repo $(PROXMOX_VMS_REPO) \
-		--ssh-key $(SSH_KEY)
-
-apply:
-	@$(PYTHON) -m provisioner apply $(CLUSTER) \
+	@$(PYTHON) -m provisioner \
 		--proxmox-vms-repo $(PROXMOX_VMS_REPO) \
 		--ssh-key $(SSH_KEY) \
+		plan $(CLUSTER)
+
+apply:
+	@$(PYTHON) -m provisioner \
+		--proxmox-vms-repo $(PROXMOX_VMS_REPO) \
+		--ssh-key $(SSH_KEY) \
+		apply $(CLUSTER) \
 		--auto-approve
 
 destroy:
-	@$(PYTHON) -m provisioner destroy $(CLUSTER) \
+	@$(PYTHON) -m provisioner \
 		--proxmox-vms-repo $(PROXMOX_VMS_REPO) \
 		--ssh-key $(SSH_KEY) \
+		destroy $(CLUSTER) \
 		--auto-approve
 
 validate:
