@@ -30,12 +30,26 @@ class GatewayCrdsPhase(Phase):
         # `kubectl apply --server-side` is idempotent for unchanged
         # CRDs (the apiserver returns "no changes"). For CRD schema
         # upgrades we add `--force-conflicts`.
+        #
+        # `--validate=false` is REQUIRED when applying a URL: kubectl
+        # would otherwise try to fetch the openapi schema from the
+        # in-cluster apiserver (which it discovers from the kubeconfig,
+        # but openapi v2 was removed in k8s 1.30+) and fall back to a
+        # spurious localhost:8080.
+        #
+        # The kubeconfig written by `kubeconfig_pull` points at the
+        # SSH-tunneled apiserver (https://127.0.0.1:<local_port>);
+        # we pass it explicitly here so this phase doesn't depend
+        # on the operator's KUBECONFIG env var.
         import subprocess
         cmd = [
             "kubectl",
+            "--kubeconfig",
+            str(ctx.cluster_dir / "kubeconfig.yaml"),
             "apply",
             "--server-side",
             "--force-conflicts",
+            "--validate=false",
             "-f",
             GATEWAY_API_STANDARD_URL,
         ]

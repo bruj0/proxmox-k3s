@@ -90,9 +90,15 @@ class HelmReleasesPhase(Phase):
             ]
 
         ctx.logger.info(step="helm_install_start", chart=chart_name, version=version)
+        import os
         import subprocess
+        # Pin KUBECONFIG to the tunnel-aware kubeconfig (same
+        # rationale as cilium_install — the operator's
+        # ~/.kube/config would steer helm at the unreachable CP LAN
+        # IP).
+        env = {**os.environ, "KUBECONFIG": str(ctx.cluster_dir / "kubeconfig.yaml")}
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
         except subprocess.TimeoutExpired as exc:
             raise BootstrapError("helm_releases", {"chart": chart_name, "reason": "helm install timed out (300s)"}) from exc
         if result.returncode != 0:

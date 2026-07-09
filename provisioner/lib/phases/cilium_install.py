@@ -52,10 +52,20 @@ class CiliumInstallPhase(Phase):
         if values_file.exists():
             cmd += ["--values", str(values_file)]
 
+        import os
         import subprocess
-        ctx.logger.info(step="cilium_install_start", cmd=" ".join(cmd))
+        # Pin KUBECONFIG to the tunnel-aware kubeconfig the
+        # kubeconfig_pull phase wrote. The cilium CLI resolves the
+        # apiserver via the kubeconfig's server: URL (which already
+        # points at 127.0.0.1:<tunnel_port>). If we left KUBECONFIG
+        # unset, the operator host's `~/.kube/config` would attempt
+        # to reach the CP's LAN IP, which is not routable from the
+        # operator host (different VLAN/SDN).
+        kubeconfig = ctx.cluster_dir / "kubeconfig.yaml"
+        env = {**os.environ, "KUBECONFIG": str(kubeconfig)}
+        ctx.logger.info(step="cilium_install_start", cmd=" ".join(cmd), kubeconfig=str(kubeconfig))
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
         except FileNotFoundError as exc:
             raise BootstrapError("cilium_install", {"reason": "cilium CLI not on PATH; install from https://docs.cilium.io/"}) from exc
         except subprocess.TimeoutExpired as exc:
