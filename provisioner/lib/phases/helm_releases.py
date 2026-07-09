@@ -33,6 +33,16 @@ CHART_ORDER = (
     "envoy_gateway",
 )
 
+# Hard-required: any failure raises BootstrapError and aborts
+# the bootstrap. Auxiliary charts (cloudflare-tunnel is the only
+# one in scope) log a warning and the phase still finishes.
+HARD_REQUIRED_CHARTS: frozenset[str] = frozenset({
+    "proxmox_cloud_controller_manager",
+    "proxmox_csi_plugin",
+    "cert_manager",
+    "envoy_gateway",
+})
+
 
 @register
 class HelmReleasesPhase(Phase):
@@ -45,15 +55,38 @@ class HelmReleasesPhase(Phase):
         releases = ctx.versions.helm_releases()
         releases_by_name = {r["name"]: r for r in releases}
         installed: list[dict[str, object]] = []
+        failed: list[dict[str, str]] = []
 
         for chart_name in CHART_ORDER:
             entry = releases_by_name.get(chart_name)
             if entry is None:
                 ctx.logger.warn(step="helm_release_skipped", message=f"chart {chart_name} not in lockfile; skipping")
                 continue
-            self._install_one(ctx, chart_name, entry, installed)
+            try:
+                self._install_one(ctx, chart_name, entry, installed)
+            except BootstrapError as exc:
+                # Some charts (e.g. cloudflare-tunnel-ingress-controller
+                # 0.0.23 on ghcr.io/strrl/charts returns 403 to
+                # anonymous pulls) are nice-to-have, not hard
+                # required. The orchestrator's BootstrapError-from-_run_helm
+                # in the cicd repo distinguishes `hard_required` from
+                # auxiliary charts; we mirror that here.
+                if chart_name in HARD_REQUIRED_CHARTS:
+                    raise
+                ctx.logger.warn(
+                    step="helm_release_soft_failure",
+                    message=f"auxiliary chart {chart_name} install failed; continuing",
+                    chart=chart_name,
+                    reason=exc.detail.get("reason"),
+                    stderr=exc.detail.get("stderr", "")[-200:],
+                )
+                failed.append({"chart": chart_name, "reason": exc.detail.get("reason", "")})
 
-        return PhaseResult.make_done("helm_releases", installed=installed)
+        return PhaseResult.make_done(
+            "helm_releases",
+            installed=installed,
+            soft_failures=failed,
+        )
 
     def _install_one(
         self,
