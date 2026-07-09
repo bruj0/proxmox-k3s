@@ -194,12 +194,47 @@ class LockfileVersionsSource:
         return "1.19.5"
 
     def helm_releases(self) -> list[dict[str, Any]]:
-        # Surface every additional_dependencies entry as a typed dict.
+        # The proxmox-k3s lockfile pins each chart as a top-level
+        # `{name}_chart: "<version>"` + `{name}_values_file: "<path>"`
+        # pair, plus the chart repo URL under `{name}_repo` (optional,
+        # falls back to the cicd helm repo). We surface one entry per
+        # chart so the helm_releases phase can `helm upgrade --install`
+        # without re-parsing the lockfile.
+        payload = self._payload
         out: list[dict[str, Any]] = []
-        for entry in self._payload.get("additional_dependencies", []) or []:
-            if isinstance(entry, dict):
-                out.append(dict(entry))
+        for key, value in payload.items():
+            if not key.endswith("_chart"):
+                continue
+            base = key[: -len("_chart")]
+            version = str(value).strip()
+            if not version:
+                continue
+            entry: dict[str, Any] = {
+                "name": base,
+                "version": version,
+                "values_file": payload.get(f"{base}_values_file", ""),
+                "repo": payload.get(f"{base}_repo", self._default_repo_for(base)),
+            }
+            out.append(entry)
         return out
+
+    @staticmethod
+    def _default_repo_for(chart_base: str) -> str:
+        """Map chart base name to its well-known Helm repo URL.
+
+        The cicd locks the repos in versions.yaml; for the
+        proxmox-k3s bootstrap we use the public registry URLs that
+        match each chart's release source (see
+        tools/versions.lock.yaml::sources).
+        """
+        registry = {
+            "proxmox_cloud_controller_manager": "sergelogvinov/proxmox-cloud-controller-manager",
+            "proxmox_csi_plugin": "sergelogvinov/proxmox-csi-plugin",
+            "strrl_cloudflare_tunnel_ingress_controller": "oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller",
+            "cert_manager": "oci://quay.io/jetstack/cert-manager",
+            "envoy_gateway": "oci://docker.io/envoyproxy/gateway-helm",
+        }
+        return registry.get(chart_base, "")
 
 
 class StaticVersionsSource:

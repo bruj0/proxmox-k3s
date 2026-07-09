@@ -1,0 +1,11 @@
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority filter; policy accept;
+		tcp dport 6023 dnat to 10.0.0.50:22
+		tcp dport 6024 dnat to 10.0.0.52:22
+		tcp dport 6389 dnat to 10.0.0.53:3389
+		tcp dport 6025 dnat to 10.0.0.53:22
+		tcp dport 6026 dnat to 10.0.0.54:22
+		tcp dport 6027 dnat to 10.0.0.57:22
+	}
+}
