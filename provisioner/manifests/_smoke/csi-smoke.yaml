@@ -1,0 +1,40 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: proxmox-k3s-smoke
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: smoke-pvc
+  namespace: proxmox-k3s-smoke
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: proxmox-lvm-thin
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-write
+  namespace: proxmox-k3s-smoke
+spec:
+  restartPolicy: Never
+  containers:
+    - name: writer
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          echo proxmox-k3s-smoke-csi-marker > /data/marker && sync && cat /data/marker
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: smoke-pvc

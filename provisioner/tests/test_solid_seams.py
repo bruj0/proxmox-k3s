@@ -116,6 +116,8 @@ def test_registry_has_all_expected_phases() -> None:
         "topology_labels",
         "start_k3s_units",
         "helm_releases",
+        "csi_smoke",
+        "envoy_smoke",
         "host_ports",
         "topology_writer",
     }

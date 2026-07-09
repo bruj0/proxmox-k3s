@@ -21,6 +21,8 @@ from . import (
     apiserver_ready,  # noqa: F401,E402
     base,  # noqa: F401  -- re-export for tests
     cilium_install,  # noqa: F401,E402
+    csi_smoke,  # noqa: F401,E402
+    envoy_smoke,  # noqa: F401,E402
     gateway_crds,  # noqa: F401,E402
     helm_releases,  # noqa: F401,E402
     host_ports_check,  # noqa: F401,E402
