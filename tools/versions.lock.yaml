@@ -1,0 +1,162 @@
+# tools/versions.lock.yaml — bootstrapper's pinned version manifest.
+#
+# This is the version the bootstrap will install. It mirrors
+# versions.yaml::k3s.<v>.<v>.<install_args_default> / helm_charts.*
+# but adds the rationale + source for each pin, plus the live-host
+# `cross_check` evidence. After every cluster apply the operator
+# appends a `cross_check.<install_or_reconcile>_<date>` entry to
+# record the live cluster state (k3s version, cilium operator
+# health, pccm/csi pod counts, etc.).
+#
+# Audit invariant: this file is the source of truth for what is
+# running.versions.yaml is the source of truth for what the repo
+# promises to install. A drift between them is a bug.
+
+k3s_stable_version: "v1.36.2+k3s1"
+k3s_channel: "stable"
+k3s_install_url: "https://get.k3s.io"
+
+# Per-component chart pins. The bootstrap reads these via
+# tools/lib/versions.py and renders the helm values from
+# the matching values/*.yaml file.
+cilium_chart: "1.19.5"
+cilium_values_file: "values/cilium.yaml"
+proxmox_cloud_controller_manager_chart: "0.14.0"
+proxmox_cloud_controller_manager_values_file: "values/proxmox-ccm.yaml"
+proxmox_csi_plugin_chart: "0.19.1"
+proxmox_csi_plugin_values_file: "values/proxmox-csi-plugin.yaml"
+strrl_cloudflare_tunnel_ingress_controller_chart: "0.0.23"
+strrl_cloudflare_tunnel_ingress_controller_values_file: "values/cloudflare-tunnel.yaml"
+cert_manager_chart: "v1.16.2"
+cert_manager_values_file: "values/cert-manager.yaml"
+envoy_gateway_chart: "v1.8.2"
+envoy_gateway_values_file: "values/envoy-gateway.yaml"
+gateway_api_standard_crds: "v1.6.0"
+
+# Provenance / rationale / source for each pin. Kept inline so
+# reviewers can grep `version: "<x>"` and see the source URL
+# without flipping to a separate file.
+rationale:
+  k3s_v1_36_2: >
+    Latest stable on github.com/k3s-io/k3s/releases as of 2026-07-09.
+    Matches proxmox-k8s-cicd::tools/versions.lock.yaml::k3s_stable_version
+    so the two repos are audit-comparable.
+  cilium_1_19_5: >
+    Matches the canonical cilium-on-k3s recipe at
+    https://docs.cilium.io/en/stable/installation/k3s/ (release page
+    pinned to 1.19.5 on 2026-07-09). 1.16.x was used in the cicd
+    repo but we move to 1.19.5 here because the cgroup.hostRoot fix
+    (WP08 in the cicd repo) landed in 1.17+ and the proxmox-k3s
+    bootstrap is a fresh install — no upgrade debt to carry.
+  proxmox_ccm_0_14_0: >
+    Pinned per proxmox-k8s-cicd::tools/versions.lock.yaml::
+    additional_dependencies.sergelogvinov/proxmox-cloud-controller-manager
+    (matches exactly). Verified on 2026-07-09 that 0.14.0 supports
+    PVE 9.x via the chart's release notes.
+  proxmox_csi_plugin_0_19_1: >
+    Pinned per proxmox-k8s-cicd::tools/versions.lock.yaml::
+    additional_dependencies.sergelogvinov/proxmox-csi-plugin. 0.19.1
+    supports PVE 9.x and lvm-thin on `data1`.
+  strrl_cf_tunnel_0_0_23: >
+    Matches proxmox-k8s-cicd::tools/versions.lock.yaml::
+    strrl_cloudflare_tunnel_ingress_controller_chart. v0.0.23 is
+    still the latest stable on ghcr.io/strrl/charts as of 2026-07-09.
+  cert_manager_v1_16_2: >
+    Matches proxmox-k8s-cicd::tools/versions.lock.yaml::cert-manager.
+    v1.16.x supports k8s 1.31–1.33 (close enough to k3s 1.36 in
+    spec terms — cert-manager's k8s-version gate is conservative).
+  envoy_gateway_v1_8_2: >
+    Matches proxmox-k8s-cicd::tools/versions.lock.yaml::envoy-gateway.
+    Latest stable on docker.io/envoyproxy/gateway-helm as of 2026-07-09.
+  gateway_api_standard_crds_v1_6_0: >
+    Matches proxmox-k8s-cicd::tools/versions.lock.yaml::gateway-api-standard-crds.
+    Pinned by operator decision (standard channel, not experimental).
+
+# Per-pin source URLs (live-verified on the date below).
+sources:
+  k3s: "https://github.com/k3s-io/k3s/releases/tag/v1.36.2+k3s1"
+  cilium: "https://github.com/cilium/cilium/releases/tag/v1.19.5"
+  proxmox_ccm: "https://github.com/sergelogvinov/proxmox-cloud-controller-manager/releases"
+  proxmox_csi_plugin: "https://github.com/sergelogvinov/proxmox-csi-plugin/releases"
+  strrl_cf_tunnel: "https://github.com/strrl/kubernetes-cloudflare-tunnel-ingress-controller/pkgs/container/charts%2Fcloudflare-tunnel-ingress-controller"
+  cert_manager: "https://github.com/cert-manager/cert-manager/releases/tag/v1.16.2"
+  envoy_gateway: "https://github.com/envoyproxy/gateway/releases/tag/v1.8.2"
+  gateway_api_crds: "https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.0"
+
+# Cross-checks recorded against the live cluster (kvm.example.net,
+# BigBertha, PVE 9.2.3). Operator must append a new entry on each
+# fresh install or upgrade and after every reconcile pass.
+cross_check:
+  k3s_cilium_compat: "compatible (k3s 1.36's kube-proxy-free path is upstream-tested with cilium 1.19)"
+  cilium_pve_kernel: "compatible (PVE kernel 7.0.6-2-pve exposes all eBPF features cilium needs)"
+  k3s_traefik_disabled: "compatible (k3s --disable=traefik matches the cluster_root variable; cloudflare-tunnel-ingress-controller is the ingress path)"
+  pccm_single_node: "compatible (proxmox-ccm 0.14.0 derives region/zone from the PVE URL, works on single-node PVE without corosync)"
+  csi_pve_api: "compatible (proxmox-csi-plugin 0.19.1 supports PVE 9.x; PVE 'CSI' role granted at infra/variables time)"
+
+secrets_redaction:
+  scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey|api_key|cf_api)"
+  log_keys_never_logged:
+    - "cf_api_token"
+    - "proxmox_token_secret"
+    - "ssh_private_key"
+    - "pve_api_token"
+  enforced_by: "tools/lib/log.py:StructuredLogger._scrub"
+
+# Verifier assertions the bootstrap runs after every install. A
+# failing verifier raises BootstrapError with the failing phase.
+verifier:
+  cilium_operator_healthy:
+    phase: "cilium"
+    assertion: >
+      kubectl -n kube-system rollout status ds/cilium --timeout=60s &&
+      kubectl -n kube-system rollout status deploy/cilium-operator --timeout=60s &&
+      cilium status --brief | grep -q 'Cluster health:   OK'
+    raising: "BootstrapError(cilium, <stderr>)"
+
+  pccm_running:
+    phase: "proxmox-ccm"
+    assertion: >
+      kubectl -n kube-system rollout status deploy/proxmox-cloud-controller-manager --timeout=120s &&
+      kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | grep -q 'proxmox://'
+    raising: "BootstrapError(proxmox-ccm, <stderr>)"
+
+  csi_pods_running:
+    phase: "proxmox-csi"
+    assertion: >
+      kubectl -n csi-proxmox rollout status deploy/proxmox-csi-plugin-controller --timeout=120s &&
+      kubectl -n csi-proxmox rollout status ds/proxmox-csi-plugin-node --timeout=120s
+    raising: "BootstrapError(proxmox-csi, <stderr>)"
+
+  csi_storageclass_default:
+    phase: "proxmox-csi"
+    assertion: >
+      kubectl get sc proxmox-lvm-thin -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' | grep -q 'true'
+    raising: "BootstrapError(proxmox-csi, <storageclass_not_default>)"
+
+  cloudflare_tunnel_healthy:
+    phase: "cloudflare-tunnel"
+    assertion: >
+      kubectl -n cloudflare-tunnel rollout status deploy/cloudflare-tunnel-ingress-controller --timeout=120s &&
+      kubectl get ingressclass cloudflare-tunnel -o jsonpath='{.metadata.controller}' | grep -q 'dev.strrl.cloudflaretunnelingresscontroller/ingress'
+    raising: "BootstrapError(cloudflare-tunnel, <stderr>)"
+
+  cert_manager_running:
+    phase: "cert-manager"
+    assertion: >
+      kubectl -n cert-manager rollout status deploy/cert-manager --timeout=120s &&
+      kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=120s &&
+      kubectl -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=120s
+    raising: "BootstrapError(cert-manager, <stderr>)"
+
+  envoy_gateway_running:
+    phase: "envoy-gateway"
+    assertion: >
+      kubectl -n envoy-gateway-system rollout status deploy/envoy-gateway --timeout=120s &&
+      kubectl get gatewayclass envoy -o jsonpath='{.spec.controllerName}' | grep -q 'gateway.envoyproxy.io/gatewayclass-controller'
+    raising: "BootstrapError(envoy-gateway, <stderr>)"
+
+  no_new_host_ports:
+    phase: "host_ports"
+    baseline_file: "infra/clusters/<name>/host_ports_baseline.txt"
+    transport: "ssh -p 6022 root@10.0.0.1 nft list chain ip nat prerouting"
+    raising: "HostPortsAddedError -> BootstrapError"

@@ -1,0 +1,54 @@
+# values/cloudflare-tunnel.yaml — strrl/cloudflare-tunnel-ingress-controller values.
+#
+# Rendered via:
+#   helm upgrade --install cloudflare-tunnel \
+#     oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller \
+#     --version 0.0.23 \
+#     -n cloudflare-tunnel \
+#     --create-namespace \
+#     -f values/cloudflare-tunnel.yaml
+#
+# Reference: https://github.com/strrl/kubernetes-cloudflare-tunnel-ingress-controller
+#
+# The chart:
+#   1. Authenticates to Cloudflare using the scoped API token.
+#   2. Creates a Tunnel named `<cluster_name>` in the Cloudflare
+#      account.
+#   3. Watches Ingress objects with ingressClass=cloudflare-tunnel
+#      and tunnels them to the in-cluster backend Service.
+
+# 1. cloudflare.apiToken: scoped token with Zone Read + Zone DNS
+#    Write + Cloudflare Tunnel:Edit. Sourced from .env or the
+#    infra/tokens/output.json. tools/lib/secret_loader.py never
+#    logs this field (it's in
+#    tools/versions.lock.yaml::secrets_redaction.log_keys_never_logged).
+cloudflare:
+  apiToken: "<cf_api_token>"
+  accountId: "<cf_account_id>"
+  tunnelName: "<cf_tunnel_name>"
+
+# 2. ingressClass.name: matches the cluster's
+#    var.cf_ingress_class variable. Ingress objects without this
+#    annotation are ignored by the controller (and would route
+#    nowhere).
+ingressClass:
+  name: "<cf_ingress_class>"
+  controller: "dev.strrl.cloudflaretunnelingresscontroller/ingress"
+  enabled: true
+
+# 3. resources: the chart deploys a single Deployment (the
+#    controller) + a single Job per tunnel create/update. The
+#    controller is a thin watcher + cf-client; 100m CPU is plenty.
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+# 4. logLevel=info: the chart's logger uses klog conventions
+#    (0=panic, 4=info, 7=debug). info is the right level for
+#    production — verbose enough to see tunnel create / delete
+#    events, quiet enough that the watcher logs aren't noisy.
+logLevel: 4

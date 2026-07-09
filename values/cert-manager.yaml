@@ -1,0 +1,57 @@
+# values/cert-manager.yaml — cert-manager chart values.
+#
+# Rendered via:
+#   helm upgrade --install cert-manager \
+#     oci://quay.io/jetstack/charts/cert-manager \
+#     --version v1.16.2 \
+#     -n cert-manager \
+#     --create-namespace \
+#     -f values/cert-manager.yaml
+#
+# Reference: https://cert-manager.io/docs/installation/helm/
+#
+# In-cluster CA only (NO ACME / Let's Encrypt). Public certs are
+# obtained through the Cloudflare Tunnel's own cert layer (the
+# tunnel terminates TLS at Cloudflare's edge).
+
+# 1. crds.enabled=true: cert-manager is the ONLY writer of its CRDs
+#    on this cluster. We do NOT apply the CRDs via
+#    `kubectl apply --server-side` like we do for Gateway API
+#    (because cert-manager's CRDs have conversion webhooks that
+#    need to be live BEFORE the controller starts).
+crds:
+  enabled: true
+
+# 2. serviceAccount: default. cert-manager's controller and webhook
+#    each get their own SA. No IRSA / Workload Identity needed on
+#    bare k3s.
+serviceAccount:
+  create: true
+
+# 3. resources: three pods (controller, webhook, cainjector). Small
+#    cluster -> small requests.
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+# 4. config.global.logLevel=2: cert-manager uses logr conventions
+#    (0=panic, 2=info default, 7=debug). Bump to 6 when debugging
+#    a specific Issuer's reconcile loop.
+config:
+  apiVersion: "controller.config.cert-manager.io/v1alpha1"
+  kind: "ControllerConfiguration"
+  logging:
+    verbosity: 2
+    format: "json"
+
+# 5. featureGates: default set for v1.16. Pinned here so a future
+#    chart bump that flips a default doesn't surprise us.
+#    ServerSideApply=true: cert-manager applies Certificate +
+#    CertificateRequest objects via SSA so concurrent reconciles
+#    don't fight over annotations.
+featureGates: ""
+defaultFeatureGates: "ServerSideApply=true"

@@ -1,0 +1,274 @@
+# versions.yaml — master compatibility matrix for the proxmox-k3s repo.
+#
+# Mirrors proxmox-k8s-cicd/versions.yaml in shape and intent: every
+# component the bootstrapper installs has its version + install args +
+# rationale recorded here, with a `source: <url>` and `fetched: <date>`
+# for audit. Downstream consumers (the planner, the helm_runner, the
+# k3s_installer) all read this file before any PVE / helm / kubectl
+# call. A drift between this file and the live cluster is logged as a
+# `version_drift` warning, not a hard failure (k3s's built-in upgrade
+# controller is allowed to roll forward automatically — see
+# `k3s.upgrade_policy` below).
+#
+# Format (unchanged from cicd):
+#   <component>:
+#     "<version>":
+#       <constraint_field>: <value>
+#       notes: <human-readable>
+#
+# Source: every pin below was verified against its public source on
+# 2026-07-09 (release page or install doc). The full audit trail lives
+# in tools/versions.lock.yaml. Operator must extend this map after
+# running a known-good combo on a live host and confirming the cluster
+# is healthy for >= 7 days.
+
+# -----------------------------------------------------------------------------
+# k3s — the cluster's data plane + control plane (single binary).
+#
+# Pinned to the latest stable channel release as of 2026-07-09
+# (v1.36.2+k3s1). Matches the cicd repo's pin so the two repos are
+# audit-comparable.
+# -----------------------------------------------------------------------------
+k3s:
+  "v1.36.x":
+    install_url: "https://get.k3s.io"
+    channel: "stable"
+    install_args_default:
+      control_plane:
+        # Per docs.cilium.io/en/stable/installation/k3s/, cilium on k3s
+        # REQUIRES these three: flannel-backend=none (so k3s doesn't
+        # start its own CNI), disable-network-policy (cilium owns it),
+        # and disable-kube-proxy (cilium kubeProxyReplacement=true owns
+        # ClusterIP routing via eBPF). The first two are k3s's
+        # recommended flags; --disable-kube-proxy is what makes
+        # cilium eBPF the sole ClusterIP translator (avoids the
+        # k3s-io/k3s#4627 MASQUERADE short-circuit).
+        - "--flannel-backend=none"
+        - "--disable-network-policy"
+        - "--disable-kube-proxy"
+        # The cicd repo additionally disables Traefik, servicelb,
+        # local-storage, and metrics-server because it deploys
+        # cloudflare-tunnel-ingress-controller as the ingress path and
+        # proxmox-csi-plugin as the storage. We do the same here
+        # (see infra/clusters/<name>/main.tf for the per-cluster
+        # overrides). Defaults shown for the master pin; cluster roots
+        # are expected to extend this list.
+        - "--disable=traefik"
+        - "--disable=servicelb"
+        - "--disable=local-storage"
+        - "--disable=metrics-server"
+        - "--kubelet-arg=cloud-provider=external"
+        # WP08 (k3s-io/k3s#4627) root cause: the k3s default
+        # --cluster-cidr=10.42.0.0/16 overlaps the host LAN 10.0.0.0/8
+        # and short-circuits the legacy kube-proxy MASQUERADE rule for
+        # pod->apiserver traffic. Pin to non-overlapping RFC1918
+        # ranges. infra/clusters/<name>/main.tf overrides these
+        # per-cluster so cicd=172.16/172.17, apps=172.20/172.21.
+        # cluster_dns must be in the service CIDR per the k3s docs.
+        - "--cluster-cidr=172.16.0.0/16"
+        - "--service-cidr=172.17.0.0/16"
+        - "--cluster-dns=172.17.0.10"
+      agent:
+        # Agents inherit the server's flannel-backend / kube-proxy
+        # decisions; the explicit server-only flags above do not
+        # propagate to agents. We pass --kubelet-arg=cloud-provider=external
+        # here too so worker kubelets do not try to talk to a cloud
+        # provider that does not exist on the wire.
+        - "--kubelet-arg=cloud-provider=external"
+    upgrade_policy: >
+      Reconcile-and-pin: install_k3s pins the install_url + channel
+      (stable) verbatim so a fresh install is reproducible, but
+      k3s's built-in upgrade controller is allowed to roll forward
+      automatically once the cluster is up. The versions.lock.yaml
+      `cross_check.install_k3s_<date>` entries record the live
+      version after each apply; a future apply that sees a drifted
+      version logs `version_drift` (warn) but does not fail.
+    notes: >
+      Matches proxmox-k8s-cicd/tools/versions.lock.yaml::k3s_stable_version.
+      Traefik and servicelb disabled because we deploy the
+      cloudflare-tunnel-ingress-controller on the cluster (it carries
+      the public ingress). metrics-server disabled because
+      proxmox-cloud-controller-manager + kube-state-metrics ship their
+      own scraper. Pinning pod_cidr/svc_cidr/cluster_dns to RFC1918
+      ranges that do NOT overlap the host LAN 10.0.0.0/8 avoids the
+      MASQUERADE short-circuit documented in k3s-io/k3s#4627.
+    sources:
+      - "https://docs.k3s.io/quick-start"
+      - "https://docs.k3s.io/installation/configuration"
+      - "https://github.com/k3s-io/k3s/releases/tag/v1.36.2+k3s1"
+
+# -----------------------------------------------------------------------------
+# Helm charts (one block per chart, version + repository URL).
+#
+# Pinned exactly to the version the bootstrap will install. The
+# versions.lock.yaml mirrors this set with a per-component rationale
+# + provenance line; a drift between the two files is a bug.
+# -----------------------------------------------------------------------------
+helm_charts:
+  cilium:
+    version: "1.19.5"
+    chart: "cilium/cilium"
+    repository: "https://helm.cilium.io"
+    install_method: "cilium-cli"
+    install_command_template: >
+      cilium install --version 1.19.5
+      --set=ipam.operator.clusterPoolIPv4PodCIDRList="<pod_cidr>"
+    values_file: "values/cilium.yaml"
+    rationale: >
+      Pinned to the version shown on https://docs.cilium.io/en/stable/installation/k3s/
+      (verified 2026-07-09). cilium replaces kube-proxy + flannel
+      (eBPF kubeProxyReplacement=true). The k3s install_k3s phase passes
+      --flannel-backend=none and --disable-kube-proxy so the k3s
+      installer does not start a competing CNI / iptables-masquerade
+      layer.
+    sources:
+      - "https://docs.cilium.io/en/stable/installation/k3s/"
+
+  proxmox_cloud_controller_manager:
+    version: "0.14.0"
+    chart: "proxmox-cloud-controller-manager"
+    repository: "oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager"
+    install_method: "helm"
+    install_command_template: >
+      helm upgrade --install pccm
+      oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager
+      --version 0.14.0
+      -n kube-system
+      -f values/proxmox-ccm.yaml
+    values_file: "values/proxmox-ccm.yaml"
+    rationale: >
+      Provides providerID + topology.kubernetes.io/{region,zone} labels
+      on a single-node Proxmox (no corosync cluster). Without it,
+      proxmox-csi-plugin's nodes fail with "Failed to get region or
+      zone for node" and CrashLoopBackOff. Pinned to the latest
+      release per https://github.com/sergelogvinov/proxmox-cloud-controller-manager/releases.
+    sources:
+      - "https://github.com/sergelogvinov/proxmox-cloud-controller-manager"
+
+  proxmox_csi_plugin:
+    version: "0.19.1"
+    chart: "proxmox-csi-plugin"
+    repository: "oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin"
+    install_method: "helm"
+    install_command_template: >
+      helm upgrade --install proxmox-csi-plugin
+      oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin
+      --version 0.19.1
+      -n csi-proxmox
+      --create-namespace
+      -f values/proxmox-csi-plugin.yaml
+    values_file: "values/proxmox-csi-plugin.yaml"
+    rationale: >
+      Pinned to the latest release per https://github.com/sergelogvinov/proxmox-csi-plugin/releases
+      (verified 2026-07-09, app v0.19.1, chart v0.19.1). Requires
+      a PVE `CSI` role (Datastore.Allocate*, VM.Config.Disk, etc.) —
+      created by the proxmox-vms repo's pre-flight or the operator's
+      own bootstrap. The StorageClass parameters (storage=data,
+      fstype=xfs, ssd=true) are pinned in the values file.
+    sources:
+      - "https://github.com/sergelogvinov/proxmox-csi-plugin"
+      - "https://github.com/sergelogvinov/proxmox-csi-plugin/blob/main/docs/install.md"
+
+  cloudflare_tunnel_ingress_controller:
+    version: "0.0.23"
+    chart: "cloudflare-tunnel-ingress-controller"
+    repository: "oci://ghcr.io/strrl/charts"
+    install_method: "helm"
+    install_command_template: >
+      helm upgrade --install cloudflare-tunnel
+      oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller
+      --version 0.0.23
+      -n cloudflare-tunnel
+      --create-namespace
+      -f values/cloudflare-tunnel.yaml
+    values_file: "values/cloudflare-tunnel.yaml"
+    rationale: >
+      Pinned to match proxmox-k8s-cicd's install (the chart's OCI
+      ref is the same in both repos). Creates a Cloudflare Tunnel
+      named after the cluster (cf_tunnel_name=<cluster_name>) and
+      routes Ingress objects with ingressClass=cloudflare-tunnel to
+      the in-cluster backend. Requires a Cloudflare scoped API
+      token (Zone Read + Zone DNS Write + Cloudflare Tunnel:Edit)
+      — sourced from the operator's .env or the proxmox-vms
+      infra/tokens/output.json.
+    sources:
+      - "https://github.com/strrl/kubernetes-cloudflare-tunnel-ingress-controller"
+      - "https://github.com/k3s-io/k3s/blob/master/docs/release-notes.md"
+
+  cert_manager:
+    version: "v1.16.2"
+    chart: "cert-manager"
+    repository: "oci://quay.io/jetstack/charts"
+    install_method: "helm"
+    install_command_template: >
+      helm upgrade --install cert-manager
+      oci://quay.io/jetstack/charts/cert-manager
+      --version v1.16.2
+      -n cert-manager
+      --create-namespace
+      --set crds.enabled=true
+    values_file: "values/cert-manager.yaml"
+    rationale: >
+      Pinned to a release that's broadly compatible with k3s 1.36
+      (cert-manager v1.16.x supports k8s 1.31-1.33, verified on the
+      v1.16 release page on 2026-07-09). The chart's `crds.enabled`
+      stays on because the orchestrator is the only writer of CRDs
+      (unlike Gateway API where we apply the upstream CRDs
+      separately to pin the channel — see gateway_api_crds below).
+    sources:
+      - "https://github.com/cert-manager/cert-manager/releases"
+      - "https://cert-manager.io/docs/installation/helm/"
+
+  envoy_gateway:
+    version: "v1.8.2"
+    chart: "gateway-helm"
+    repository: "oci://docker.io/envoyproxy/gateway-helm"
+    install_method: "helm"
+    install_command_template: >
+      helm install eg oci://docker.io/envoyproxy/gateway-helm
+      --version v1.8.2
+      -n envoy-gateway-system
+      --create-namespace
+      --set crds.enabled=false
+    values_file: "values/envoy-gateway.yaml"
+    rationale: >
+      Pinned to the version shown on
+      https://gateway.envoyproxy.io/docs/install/install-helm/
+      (verified 2026-07-09). `crds.enabled=false` because we apply
+      the Gateway API CRDs separately (see gateway_api_crds below)
+      to pin the channel. The chart supplies only the Envoy
+      Gateway CRDs (EnvoyProxy, SecurityPolicy, etc.) at the pinned
+      version.
+    sources:
+      - "https://gateway.envoyproxy.io/docs/install/install-helm/"
+
+# -----------------------------------------------------------------------------
+# Kubernetes manifests (kubectl apply --server-side).
+# -----------------------------------------------------------------------------
+kubectl_manifests:
+  gateway_api_crds:
+    version: "v1.6.0"
+    channel: "standard"
+    url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml"
+    install_command_template: >
+      kubectl apply --server-side
+      -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml
+    rationale: >
+      Standard-channel Gateway API CRDs v1.6.0, pinned by operator
+      decision. The Envoy Gateway chart is installed with
+      `crds.enabled=false` to prevent version drift between the
+      upstream-pinned CRDs and the chart-bundled CRDs. Applied via
+      `kubectl apply --server-side` (idempotent for unchanged CRDs,
+      force-conflicts for schema upgrades).
+    sources:
+      - "https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.0"
+
+# -----------------------------------------------------------------------------
+# Pinned toolchain (matches proxmox-vms). Strict mypy / ruff versions
+# in pyproject.toml derive from these.
+# -----------------------------------------------------------------------------
+pinned_toolchain:
+  python: ">= 3.11"
+  tofu: ">= 1.6.0"
+  helm: ">= 3.18.0"
+  kubectl: ">= 1.34.0"

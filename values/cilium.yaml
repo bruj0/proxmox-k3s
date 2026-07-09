@@ -1,0 +1,99 @@
+# values/cilium.yaml — cilium chart values for the proxmox-k3s bootstrap.
+#
+# Rendered into the cilium install command via
+#   cilium install --version 1.19.5 \
+#     --set=ipam.operator.clusterPoolIPv4PodCIDRList="<pod_cidr>" \
+#     --set=k8sServiceHost=<cp_host_ip> \
+#     --set=kubeProxyReplacement=true \
+#     ... (the rest of this file)
+#
+# Mirrors the cicd repo's helm_client.py release but converted to the
+# cilium-cli `--set=key=value` / `--set=key.subkey=value` syntax so it
+# can be templated directly. The cilium-cli accepts the same
+# `key.subkey` form as `helm -f values.yaml`; the mapping is:
+#
+#   helm -f key=value      -> cilium-cli --set=key=value
+#   helm -f key.subkey=val -> cilium-cli --set=key.subkey=val
+#
+# Inline notes call out WHY each setting is here. See
+# docs/cilium-installation.md (planned) for the full design.
+
+# WP08 (k3s-io/k3s#4627) root cause + fix:
+# k3s default --cluster-cidr=10.42.0.0/16 overlaps the host LAN
+# 10.0.0.0/8, which short-circuits the legacy kube-proxy MASQUERADE
+# rule for pod->apiserver traffic. We pin pod/svc CIDRs to
+# non-overlapping RFC1918 ranges (cicd 172.16/172.17, apps
+# 172.20/172.21) in versions.yaml::k3s.<v>::install_args_default.
+# cilium then auto-detects the node's routing table (we don't pass
+# ipv4NativeRoutingCIDR or ipam.operator.clusterPoolIPv4PodCIDRList
+# manually except via <pod_cidr>).
+#
+# The single-CP-cluster rule: cilium-operator's default is `replicas:
+# 2` for HA. With only one CP the second operator pod stays Pending
+# forever and `cilium install --wait` times out. Pin replicas=1.
+
+# 1. kubeProxyReplacement=true is REQUIRED. Without it, cilium runs
+#    alongside k3s's kube-proxy, both try to DNAT the kubernetes
+#    ClusterIP, and the conntrack table ends up with conflicting
+#    rules (k3s-io/k3s#4627).
+kubeProxyReplacement: "true"
+
+# 2. k8sServiceHost + k8sServicePort let cilium-agent reach the
+#    apiserver directly during its own startup, before the
+#    kubernetes.default.svc ClusterIP is reachable. The cicd repo
+#    passes the CP host IP; we do the same here. tools/lib/helm_runner.py
+#    renders <cp_host_ip> from the cluster root's control_plane_ip output.
+k8sServiceHost: "<cp_host_ip>"
+k8sServicePort: "6443"
+
+# 3. mtu=1450: vxlan adds 50 bytes of overhead to the underlying
+#    eth0 mtu=1500. Without this, large TLS ServerHello responses
+#    from the apiserver get fragmented at the vxlan encap and the
+#    conntrack return-path drops them. This was the visible half
+#    of the WP08 root cause before the MASQUERADE rule was
+#    identified.
+mtu: "1450"
+
+# 4. gatewayAPI.enabled=true: required for Gateway API resources
+#    (the cilium operator watches GatewayClass / Gateway / HTTPRoute
+#    objects on the cluster). The Envoy Gateway chart installs the
+#    Gateway API CRDs; cilium provides the data-plane enforcement.
+gatewayAPI.enabled: "true"
+
+# 5. ipam.mode=cluster-pool + ipam.operator.clusterPoolIPv4PodCIDRList
+#    tell cilium to allocate pod IPs from <pod_cidr>. The bootstrap
+#    renders <pod_cidr> from the cluster root's var.pod_cidr so it
+#    matches the k3s --cluster-cidr flag.
+ipam.mode: "cluster-pool"
+ipam.operator.clusterPoolIPv4PodCIDRList: "<pod_cidr>"
+
+# 6. cgroup.hostRoot=/sys/fs/cgroup + cgroup.autoMount.enabled=false:
+#    WP08 §14.4 second root cause (cilium cgroup root). cilium 1.16.x
+#    defaulted to mounting /proc inside an initContainer at
+#    /run/cilium/cgroupv2 and attached its BPF cgroup hooks there.
+#    Pods created by k3s/kubelet are under /sys/fs/cgroup/kubepods.slice/
+#    so the cilium socket-LB intercept never fired. We pin 1.19.5
+#    (which has cgroup.hostRoot as a first-class value) and set it
+#    explicitly so the BPF cgroup programs attach at the actual host
+#    cgroup root where k3s pods live.
+#
+#    `cgroup.autoMount.enabled=false` stops the chart from creating
+#    its own cgroup mount (it inherits the host's cgroup hierarchy).
+cgroup.hostRoot: "/sys/fs/cgroup"
+cgroup.autoMount.enabled: "false"
+
+# 7. operator.replicas=1: single-CP clusters (cicd, apps, all
+#    proxmox-k3s clusters for now). The chart default of 2 leaves
+#    the second operator pod Pending forever.
+operator.replicas: "1"
+
+# 8. hubble.enabled=false: we don't run hubble in this bootstrap
+#    (it's an opt-in observability layer; cluster owners can enable
+#    it post-install via cilium hubble enable).
+hubble.enabled: "false"
+
+# 9. image.pullPolicy=IfNotPresent: the cilium agent images are
+#    large; on a fast LAN this saves ~30s on `cilium install` vs.
+#    Always. The chart's default is IfNotPresent already; pinning
+#    it explicitly so future chart bumps don't surprise us.
+image.pullPolicy: "IfNotPresent"

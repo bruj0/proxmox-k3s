@@ -1,0 +1,57 @@
+# values/envoy-gateway.yaml — envoy-gateway (gateway-helm chart) values.
+#
+# Rendered via:
+#   helm install eg oci://docker.io/envoyproxy/gateway-helm \
+#     --version v1.8.2 \
+#     -n envoy-gateway-system \
+#     --create-namespace \
+#     --set crds.enabled=false \
+#     -f values/envoy-gateway.yaml
+#
+# Reference: https://gateway.envoyproxy.io/docs/install/install-helm/
+#
+# The chart installs the Envoy Gateway CRDs (EnvoyProxy,
+# SecurityPolicy, etc.) at the pinned chart version. The Gateway API
+# CRDs (GatewayClass, Gateway, HTTPRoute) are applied separately via
+# `kubectl apply --server-side` to the pinned standard-channel version
+# v1.6.0 — see tools/versions.lock.yaml::gateway_api_standard_crds.
+
+# 1. crds.enabled=false: the Gateway API CRDs are applied via
+#    `kubectl apply --server-side` against the upstream-pinned
+#    standard-channel v1.6.0 (NOT via the chart). This avoids the
+#    scenario where a chart bump silently changes the CRD schema.
+crds:
+  enabled: false
+
+# 2. The chart's `gatewayAPI` block is NOT for the Gateway API
+#    standard CRDs — it's a chart-internal flag. Leave unset
+#    (defaults to false).
+
+# 3. resources: the chart deploys:
+#      - deployment/envoy-gateway   (the controller; one pod)
+#      - daemonset/envoy-gateway-proxy isn't shipped by default
+#    The controller is a small CRD reconciler + xDS server. 100m
+#    CPU is plenty; bump if xDS update fanout becomes a bottleneck.
+resources:
+  requests:
+    cpu: "50m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# 4. config.envoyGateway.logging.level=info: envoy-gateway's
+#    component log levels are 0=panic .. 7=debug.
+config:
+  envoyGateway:
+    logging:
+      level:
+        default: "info"
+
+# 5. provider.deployment.resources: when the chart creates the
+#    default GatewayClass controller's data plane (via the
+#    `envoy-gateway-proxy` chart sub-component), it inherits the
+#    resources block above. Pinning here keeps it discoverable in
+#    a single grep.
+provider:
+  type: "Kubernetes"
