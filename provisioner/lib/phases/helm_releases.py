@@ -52,6 +52,13 @@ class HelmReleasesPhase(Phase):
     requires = ("cilium_install",)
 
     def run(self, ctx: Container) -> PhaseResult:
+        # Pre-step: ensure the legacy HTTP Helm repo for cert-manager
+        # is registered. OCI registries are discovered per-chart
+        # automatically by 'helm upgrade --install <oci://...>'; the
+        # cert-manager chart lives at the historical Jetstack HTTP
+        # index which helm only finds if the repo is added first.
+        _ensure_helm_repos()
+
         releases = ctx.versions.helm_releases()
         releases_by_name = {r["name"]: r for r in releases}
         installed: list[dict[str, object]] = []
@@ -150,6 +157,46 @@ class HelmReleasesPhase(Phase):
             )
         installed.append({"name": chart_name, "version": version, "namespace": _namespace_for(chart_name)})
         ctx.logger.info(step="helm_install_ok", chart=chart_name, version=version)
+
+
+def _ensure_helm_repos() -> None:
+    """Add the legacy HTTP Helm repo for cert-manager (idempotent).
+
+    The four OCI-based charts (proxmox-ccm, proxmox-csi,
+    cloudflare-tunnel, envoy-gateway) are pulled directly by
+    `oci://...` URL — helm doesn't need a registered repo for
+    them. Cert-manager still publishes at
+    https://charts.jetstack.io (the historical index); helm
+    needs the repo registered before `helm upgrade --install
+    cert-manager/cert-manager` will resolve it.
+
+    `helm repo add` is idempotent (updating an existing repo is
+    fine). We ignore the rc since the existing repo may
+    already be configured (no `helm repo add` flag suppresses
+    the "already exists" error).
+    """
+    import subprocess
+    proc = subprocess.run(  # noqa: S603
+        [
+            "helm", "repo", "add", "cert-manager",
+            "https://charts.jetstack.io",
+            "--force-update",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    # `helm repo add` exit code 1 with stderr "already exists" is
+    # fine (means someone else registered it). Anything else is
+    # not.
+    if proc.returncode != 1:
+        return
+    if "already exists" in proc.stderr.lower():
+        return
+    raise BootstrapError(
+        "helm_releases",
+        {"reason": "helm repo add cert-manager failed", "stderr": proc.stderr.strip()},
+    )
 
 
 def _namespace_for(chart_name: str) -> str:
