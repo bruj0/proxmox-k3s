@@ -123,6 +123,22 @@ def run(
     plan = BootstrapPlan(cluster_name=container.cluster_name)
     for name in phase_names:
         phase: Phase = registry.get(name)
+        # State-store gate: if the phase already succeeded (recorded
+        # by a previous `apply` on the same cluster_dir), and the
+        # phase itself didn't override should_run to require
+        # something fresher, skip the run. The phase's run() is
+        # still idempotent, but skipping saves minutes on
+        # already-bootstrapped clusters.
+        if not phase.should_run(container):
+            container.logger.info(
+                step="phase_skipped",
+                phase=name,
+                reason="already marked done in bootstrap_state.json",
+            )
+            from .phases.base import PhaseResult
+            skip_result: PhaseResult = PhaseResult.make_skipped(name, reason="already done (state cache)")
+            plan.phases.append((name, skip_result))
+            continue
         container.logger.info(step="phase_start", phase=name)
         try:
             result: PhaseResult = phase.run(container)
