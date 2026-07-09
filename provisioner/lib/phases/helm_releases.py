@@ -49,7 +49,12 @@ class HelmReleasesPhase(Phase):
     """Install every pinned chart in CHART_ORDER via `helm upgrade --install`."""
 
     name = "helm_releases"
-    requires = ("cilium_install",)
+    # topology_labels must run before helm_releases: proxmox-csi-plugin's
+    # node DaemonSet reads topology.kubernetes.io/{region,zone} at startup;
+    # on a single-node PVE host proxmox-ccm doesn't set them automatically,
+    # so without topology_labels the csi-plugin-node pods CrashLoopBackOff
+    # forever with "Failed to get region or zone for node".
+    requires = ("cilium_install", "topology_labels")
 
     def run(self, ctx: Container) -> PhaseResult:
         # Pre-step: ensure the legacy HTTP Helm repo for cert-manager

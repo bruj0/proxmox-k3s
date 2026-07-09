@@ -28,6 +28,7 @@ from . import (
     kubeconfig_pull,  # noqa: F401,E402
     ssh_probe,  # noqa: F401,E402
     start_k3s_units,  # noqa: F401,E402
+    topology_labels,  # noqa: F401,E402
     topology_writer,  # noqa: F401,E402
     validate,  # noqa: F401,E402
 )

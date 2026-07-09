@@ -113,6 +113,7 @@ def test_registry_has_all_expected_phases() -> None:
         "kubeconfig_pull",
         "gateway_crds",
         "cilium_install",
+        "topology_labels",
         "start_k3s_units",
         "helm_releases",
         "host_ports",
