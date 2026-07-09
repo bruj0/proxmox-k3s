@@ -31,7 +31,11 @@ class CiliumInstallPhase(Phase):
             raise BootstrapError("cilium_install", {"reason": "missing intent/topology"})
 
         # Resolve --set values from intent + topology.
+        topo = ctx.upstream_topology
+        if topo is None or not topo.control_plane:
+            raise BootstrapError("cilium_install", {"reason": "missing topology"})
         cilium_version = ctx.versions.cilium_chart_version()
+        cp_ip = topo.control_plane[0].ip
 
         # Mirrors the canonical install command at
         # https://docs.cilium.io/en/stable/installation/k3s/#install-cilium:
@@ -52,6 +56,17 @@ class CiliumInstallPhase(Phase):
         cmd: list[str] = [
             "cilium", "install",
             "--version", cilium_version,
+            # k3s bakes the in-cluster kubeconfig with a
+            # 127.0.0.1:<random> server: URL (the localhost proxy
+            # that fronts k3s's apiserver). cilium's `config`
+            # init container tries to reach that proxy at start-up
+            # but the proxy binds to the HOST network, so the init
+            # container sees "dial 127.0.0.1:<p>: connect refused"
+            # and crash-loops. Pin k8sServiceHost to the CP's LAN
+            # IP so cilium reaches the apiserver via the routable
+            # interface instead. k8sServicePort stays at 6443.
+            "--set", f"k8sServiceHost={cp_ip}",
+            "--set", "k8sServicePort=6443",
             # Pod CIDR — explicit override required because k3s's
             # --cluster-cidr=172.16.0.0/16 differs from cilium's
             # 10.42.0.0/16 default (see docs: "Install Cilium with
