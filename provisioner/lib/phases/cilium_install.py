@@ -31,29 +31,44 @@ class CiliumInstallPhase(Phase):
             raise BootstrapError("cilium_install", {"reason": "missing intent/topology"})
 
         # Resolve --set values from intent + topology.
-        cp_ip = topo.control_plane[0].ip
         cilium_version = ctx.versions.cilium_chart_version()
 
+        # Mirrors the canonical install command at
+        # https://docs.cilium.io/en/stable/installation/k3s/#install-cilium:
+        #     cilium install --version 1.19.5 \
+        #       --set=ipam.operator.clusterPoolIPv4PodCIDRList="<pod_cidr>"
+        #
+        # cilium discovers the apiserver via the kubeconfig's
+        # server: URL (the operator host's
+        # 127.0.0.1:<tunnel_port>, written by kubeconfig_pull).
+        # Passing --set k8sServiceHost=<cp_lan_ip> is unnecessary
+        # AND wrong: cilium would try to reach the CP's LAN IP
+        # directly, which is not routable from the operator host.
+        #
+        # cilium also auto-detects:
+        #   - kubeProxyReplacement: implied by k3s --disable-kube-proxy
+        #   - mtu: probed from the cluster-cidr + eth0 MTU
+        #   - cgroup.hostRoot: discovered via /proc/self/mountinfo
         cmd: list[str] = [
             "cilium", "install",
             "--version", cilium_version,
-            "--set", f"k8sServiceHost={cp_ip}",
-            "--set", "k8sServicePort=6443",
-            "--set", "kubeProxyReplacement=true",
-            "--set", "cgroup.hostRoot=/sys/fs/cgroup",
-            "--set", "cgroup.autoMount.enabled=false",
+            # Pod CIDR — explicit override required because k3s's
+            # --cluster-cidr=172.16.0.0/16 differs from cilium's
+            # 10.42.0.0/16 default (see docs: "Install Cilium with
+            # --set=ipam.operator.clusterPoolIPv4PodCIDRList=... to
+            # match k3s default podCIDR").
+            "--set", f"ipam.operator.clusterPoolIPv4PodCIDRList={intent.pod_cidr}",
             # Cilium 1.19.x's gatewayAPI controller (per
             # cilium/cilium@v1.19.5/operator/pkg/gateway-api/cell.go)
             # hard-requires `gateway.networking.k8s.io/v1alpha2/
             # TLSRoute`, which Gateway API v1.3+ removed from the
-            # standard channel. The simplest fix is to disable
-            # cilium's gateway-api reconciler entirely; the
-            # envoy-gateway chart that the bootstrap installs later
-            # owns the Gateway API surface.
+            # standard channel. Disable cilium's gateway-api
+            # reconciler entirely; envoy-gateway (installed later
+            # in helm_releases) owns the Gateway API surface.
             "--set", "gatewayAPI.enabled=false",
+            # Single-CP cluster: cilium-operator's default HA
+            # replica=2 leaves the second pod Pending forever.
             "--set", "operator.replicas=1",
-            "--set", f"ipam.operator.clusterPoolIPv4PodCIDRList={intent.pod_cidr}",
-            "--set", "mtu=1450",
         ]
         # If the values file exists, append it via --values.
         values_file = ctx.repo_root / "values" / "cilium.yaml"
@@ -84,4 +99,4 @@ class CiliumInstallPhase(Phase):
                 {"reason": "cilium install failed", "stderr": result.stderr.strip()[-400:]},
             )
         ctx.logger.info(step="cilium_install_ok", version=cilium_version)
-        return PhaseResult.make_done("cilium_install", version=cilium_version, cp_ip=cp_ip)
+        return PhaseResult.make_done("cilium_install", version=cilium_version)

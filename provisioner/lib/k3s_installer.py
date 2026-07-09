@@ -133,7 +133,15 @@ class AgentInstallPlan:
 #                                 depend on the ClusterIP during its own
 #                                 startup (chicken-and-egg).
 _SERVER_BASE_FLAGS: tuple[str, ...] = (
+    # Per https://docs.cilium.io/en/stable/installation/k3s/ —
+    # `--flannel-backend=none` disables the built-in flannel CNI
+    # (so cilium can own pod networking) and `--disable-network-policy`
+    # disables the built-in network policy enforcer (so cilium
+    # can own NetworkPolicy reconciliation without flannel-vs-cilium
+    # races). The remaining --disable flags strip the other
+    # built-ins that would otherwise fight with our helm charts.
     "--flannel-backend=none",
+    "--disable-network-policy",
     "--disable=traefik",
     "--disable=servicelb",
     "--disable=local-storage",
