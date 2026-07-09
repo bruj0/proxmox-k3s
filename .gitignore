@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Repo-local build output
+build/
+logs/
+*.audit.jsonl
+
+# Secrets
+.env
+.env.*
+terraform.tfvars
+terraform.tfvars.*
+output.json
+k3s.json
+
+# OpenTofu (none in this repo, but the cluster-root directory
+# is `infra/clusters/<name>` and inherits this for safety)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan
+*.tfplan.json
+
+# SSH
+known_hosts
+*.ppk

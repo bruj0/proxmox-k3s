@@ -1,0 +1,52 @@
+[project]
+name = "proxmox-k3s"
+version = "0.1.0"
+description = "Stage-2 of the proxmox provisioning pipeline: turns the proxmox-vms clones into a working k3s cluster."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "proxmox-k3s" }]
+
+# No runtime third-party dependencies. The bootstrap uses only the
+# Python stdlib (subprocess for helm/kubectl/scp, urllib for the
+# in-cluster HTTP probe, json for the output file, etc.).
+# The runtime deps for k3s + helm charts are pinned in versions.yaml
+# + tools/versions.lock.yaml.
+
+[project.scripts]
+# `uv tool install .` (or `pip install .`) registers `bootstrap` on PATH.
+bootstrap = "provisioner.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["provisioner"]
+exclude = ["provisioner/tests", "provisioner/tests/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["provisioner/tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+# I001 is triggered by the parenthesized multi-line import block
+# in cli.py; it's a cosmetic issue (the noqa on each line works,
+# but ruff's grouping detection doesn't propagate it). Ignoring
+# is the cheap fix.
+ignore = ["E501", "I001"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+explicit_package_bases = true
+files = ["provisioner/lib", "provisioner/cli.py", "provisioner/__main__.py"]
+exclude = ["provisioner/tests/.*", "provisioner/lib/packer/.*"]
