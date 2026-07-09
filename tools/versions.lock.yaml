@@ -21,13 +21,15 @@ k3s_install_url: "https://get.k3s.io"
 # the matching values/*.yaml file.
 cilium_chart: "1.19.5"
 cilium_values_file: "values/cilium.yaml"
-proxmox_cloud_controller_manager_chart: "0.14.0"
+proxmox_cloud_controller_manager_chart: "0.2.29"
+# NB: 0.14.0 is the chart appVersion; 0.2.29 is the chart package version.
 proxmox_cloud_controller_manager_values_file: "values/proxmox-ccm.yaml"
-proxmox_csi_plugin_chart: "0.19.1"
+proxmox_csi_plugin_chart: "0.5.9"
+# NB: 0.19.1 is the chart appVersion; 0.5.9 is the chart package version.
 proxmox_csi_plugin_values_file: "values/proxmox-csi-plugin.yaml"
 strrl_cloudflare_tunnel_ingress_controller_chart: "0.0.23"
 strrl_cloudflare_tunnel_ingress_controller_values_file: "values/cloudflare-tunnel.yaml"
-cert_manager_chart: "v1.16.2"
+cert_manager_chart: "1.20.3"
 cert_manager_values_file: "values/cert-manager.yaml"
 envoy_gateway_chart: "v1.8.2"
 envoy_gateway_values_file: "values/envoy-gateway.yaml"
