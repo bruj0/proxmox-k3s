@@ -143,19 +143,86 @@ class EnvSecretsSource:
     def cf_account_id(self) -> str:
         return os.environ.get("CF_ACCOUNT_ID", "")
 
+    def proxmox_api_url(self) -> str:
+        return os.environ.get("PROXMOX_API_URL", "")
+
+    def proxmox_api_token(self) -> str:
+        """The full PVE token in `<user>@<realm>!<id>=<secret>` form."""
+        return os.environ.get("PROXMOX_API_TOKEN", "")
+
+    def proxmox_token_id(self) -> str:
+        """Left side of PROXMOX_API_TOKEN: `<user>@<realm>!<id>`."""
+        token = self.proxmox_api_token()
+        if "=" not in token:
+            return ""
+        return token.split("=", 1)[0]
+
+    def proxmox_token_secret(self) -> str:
+        """Right side of PROXMOX_API_TOKEN: opaque UUID."""
+        token = self.proxmox_api_token()
+        if "=" not in token:
+            return ""
+        return token.split("=", 1)[1]
+
+    def proxmox_region(self) -> str:
+        """Proxmox 'region' label for cloud-resources.
+
+        The cloud-controller-manager and csi-plugin charts
+        annotate Nodes with `topology.kubernetes.io/region`. The
+        cicd orchestrator derives this from `cluster_name`. We
+        mirror that here so PVCs land on the matching zone.
+        """
+        return os.environ.get("PROXMOX_REGION", "bruj0")
+
+    def proxmox_zone(self) -> str:
+        return os.environ.get("PROXMOX_ZONE", "kvm")
+
 
 class StaticSecretsSource:
     """Secrets source for tests — values are passed in directly."""
 
-    def __init__(self, *, cf_api_token: str = "", cf_account_id: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        cf_api_token: str = "",
+        cf_account_id: str = "",
+        proxmox_api_url: str = "https://kvm.example.net:8006/api2/json",
+        proxmox_token_id: str = "root@pam!ci",
+        proxmox_token_secret: str = "deadbeef-0000-0000-0000-000000000000",
+        proxmox_region: str = "bruj0",
+        proxmox_zone: str = "kvm",
+    ) -> None:
         self._cf_token = cf_api_token
         self._cf_account = cf_account_id
+        self._proxmox_url = proxmox_api_url
+        self._proxmox_id = proxmox_token_id
+        self._proxmox_secret = proxmox_token_secret
+        self._proxmox_region = proxmox_region
+        self._proxmox_zone = proxmox_zone
 
     def cf_api_token(self) -> str:
         return self._cf_token
 
     def cf_account_id(self) -> str:
         return self._cf_account
+
+    def proxmox_api_url(self) -> str:
+        return self._proxmox_url
+
+    def proxmox_api_token(self) -> str:
+        return f"{self._proxmox_id}={self._proxmox_secret}"
+
+    def proxmox_token_id(self) -> str:
+        return self._proxmox_id
+
+    def proxmox_token_secret(self) -> str:
+        return self._proxmox_secret
+
+    def proxmox_region(self) -> str:
+        return self._proxmox_region
+
+    def proxmox_zone(self) -> str:
+        return self._proxmox_zone
 
 
 class LockfileVersionsSource:

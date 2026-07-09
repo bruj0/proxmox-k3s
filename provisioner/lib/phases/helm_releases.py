@@ -87,15 +87,12 @@ class HelmReleasesPhase(Phase):
         if values_file.exists():
             cmd += ["--values", str(values_file)]
 
-        # Inline secret values for the cloudflare tunnel.
-        if chart_name == "strrl_cloudflare_tunnel_ingress_controller":
-            intent = ctx.cluster_intent
-            cmd += [
-                "--set", f"cloudflare.apiToken={ctx.secrets.cf_api_token()}",
-                "--set", f"cloudflare.accountId={ctx.secrets.cf_account_id()}",
-                "--set", f"cloudflare.tunnelName={intent.cf_tunnel_name if intent else ctx.cluster_name}",
-                "--set", "ingressClass.name=cloudflare-tunnel",
-            ]
+        # Inline (per-chart) secret values for charts that need them.
+        # cert-manager and envoy-gateway don't need any; the rest
+        # fetch their secret envs from the EnvSecretsSource.
+        intent = ctx.cluster_intent
+        for set_kind, key, value in _secret_flags(chart_name, ctx, intent):
+            cmd += [set_kind, f"{key}={value}"]
 
         ctx.logger.info(step="helm_install_start", chart=chart_name, release_name=release_name, version=version)
         import os
@@ -123,11 +120,61 @@ class HelmReleasesPhase(Phase):
 
 
 def _namespace_for(chart_name: str) -> str:
-    """Map chart name -> namespace (pinned in the cicd repo's design)."""
+    """Map chart name -> namespace (matches the cicd helm_client convention)."""
     return {
         "proxmox_cloud_controller_manager": "kube-system",
-        "proxmox_csi_plugin": "csi-proxmox",
-        "strrl_cloudflare_tunnel_ingress_controller": "cloudflare-tunnel",
+        "proxmox_csi_plugin": "proxmox-csi-plugin",
+        "strrl_cloudflare_tunnel_ingress_controller": "cloudflare-tunnel-ingress-controller",
         "cert_manager": "cert-manager",
         "envoy_gateway": "envoy-gateway-system",
     }.get(chart_name, "default")
+
+
+def _secret_flags(
+    chart_name: str,
+    ctx: Any,
+    intent: Any,
+) -> list[tuple[str, str, str]]:
+    """Inline `--set` / `--set-string` flags the chart needs.
+
+    Returns `[(set_kind, key, value), ...]` where `set_kind` is
+    `"--set"` or `"--set-string"`. --set-string is needed for
+    values where helm would otherwise auto-coerce (annotations
+    need string types — `true` bool would render as `null`).
+
+    Secrets come from `ctx.secrets` (EnvSecretsSource in
+    production). The cicd `helm_client.py` is the source of
+    truth for keys (cluster URL, token, region/zone, etc.).
+    """
+    proxmox_url = ctx.secrets.proxmox_api_url()
+    flags: list[tuple[str, str, str]] = []
+    if chart_name in ("proxmox_cloud_controller_manager", "proxmox_csi_plugin"):
+        flags += [
+            ("--set", "config.clusters[0].url", proxmox_url),
+            ("--set", "config.clusters[0].token_id", ctx.secrets.proxmox_token_id()),
+            ("--set", "config.clusters[0].token_secret", ctx.secrets.proxmox_token_secret()),
+            ("--set", "config.clusters[0].region", ctx.secrets.proxmox_region()),
+            ("--set", "config.clusters[0].insecure", "true"),
+            ("--set", "config.features.provider", "default"),
+        ]
+    if chart_name == "proxmox_csi_plugin":
+        flags += [
+            ("--set", "storageClass[0].name", "proxmox-lvm-thin"),
+            ("--set", "storageClass[0].region", ctx.secrets.proxmox_region()),
+            ("--set", "storageClass[0].zone", ctx.secrets.proxmox_zone()),
+            ("--set", "storageClass[0].storage", "data1"),
+            # --set-string: helm --set would coerce `true` to bool,
+            # breaking the annotation rendering.
+            ("--set-string", "storageClass[0].annotations.storageclass\\.kubernetes\\.io/is-default-class", "true"),
+        ]
+    if chart_name == "strrl_cloudflare_tunnel_ingress_controller":
+        tunnel = intent.cf_tunnel_name if intent else ctx.cluster_name
+        flags += [
+            ("--set", "cloudflare.apiToken", ctx.secrets.cf_api_token()),
+            ("--set", "cloudflare.accountId", ctx.secrets.cf_account_id()),
+            ("--set", "cloudflare.tunnelName", tunnel),
+            ("--set", "ingressClass.name", "cloudflare-tunnel"),
+            ("--set", "ingressClass.controller", "dev.strrl.cloudflaretunnelingresscontroller/ingress"),
+            ("--set", "ingressClass.enabled", "true"),
+        ]
+    return flags
