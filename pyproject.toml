@@ -7,14 +7,22 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "proxmox-k3s" }]
 
-# No runtime third-party dependencies. The bootstrap uses only the
-# Python stdlib (subprocess for helm/kubectl/scp, urllib for the
-# in-cluster HTTP probe, json for the output file, etc.).
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+# Runtime dependencies.
+# - pyyaml: the versions.py loader parses tools/versions.lock.yaml
+#   (pinned versions for every chart + tool the bootstrap installs).
 # The runtime deps for k3s + helm charts are pinned in versions.yaml
 # + tools/versions.lock.yaml.
 
 [project.scripts]
 # `uv tool install .` (or `pip install .`) registers both CLIs on PATH.
+# `proxmox-k3s` is the repo-named entry point (preferred for
+# narrative/docs cross-reference); `bootstrap` is kept for
+# backwards compatibility with earlier invocations.
+proxmox-k3s = "provisioner.cli:main"
 bootstrap = "provisioner.cli:main"
 pveproxy = "tools.pveproxy:main"
 
