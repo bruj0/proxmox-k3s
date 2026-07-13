@@ -6,9 +6,11 @@ Subcommands (mirrors proxmox-vms/provisioner/cli.py):
   bootstrap apply       <cluster>     # run every selected phase; idempotent
   bootstrap destroy     <cluster>     # remove the cluster's state
   bootstrap validate    <cluster>     # parse main.tf + verify upstream output.json
-  bootstrap kubeconfig  <cluster>     # fetch + copy the admin kubeconfig to a local path
+  bootstrap kubeconfig  <cluster>     # fetch + merge the admin kubeconfig into the
+                                       # operator's local kubeconf (~/.kube/config)
                                        # (default uses CP's internal IP; --use-tunnel
-                                       # routes through the SSH port-forward)
+                                       # routes through the SSH port-forward; --output
+                                       # writes to a standalone file instead)
 
 Exit codes (mirrors proxmox-vms):
    0  success
@@ -22,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import yaml
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -343,23 +346,61 @@ def cmd_kubeconfig(args: argparse.Namespace) -> int:
         )
         written = rewritten
 
-    # Copy to the user-requested output path.
-    output_path.write_text(written)
-    ctx.log.info(
-        step="kubeconfig_copied",
-        path=str(output_path),
-        source=str(cluster_kubeconfig),
-    )
+    # Parse the in-memory kubeconfig as a YAML mapping. The fetch
+    # path (cluster + user + context) is what we merge into the
+    # user's local kubeconf.
+    try:
+        new_doc = yaml.safe_load(written) or {}
+    except yaml.YAMLError as exc:
+        ctx.log.error(
+            step="kubeconfig_parse_failed",
+            error=str(exc),
+            resolution="the upstream kubeconfig is not valid YAML",
+        )
+        return EXIT_PHASE
+
+    if args.output is not None:
+        # Explicit output path — overwrite the file with the
+        # rewritten kubeconfig (this is the "I want a standalone
+        # kubeconfig file" mode). No merging.
+        output_path: Path = args.output.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(written)
+        ctx.log.info(
+            step="kubeconfig_written",
+            path=str(output_path),
+            mode="standalone",
+            source=str(cluster_kubeconfig),
+        )
+    else:
+        # Default: merge into the operator's local kubeconf.
+        # Honor $KUBECONFIG if it points at a single file (kubectl
+        # supports a colon-separated list, but we don't try to
+        # merge across multiple files — that's the operator's job).
+        default_path = Path(os.environ.get("KUBECONFIG") or "~/.kube/config").expanduser()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        merge_kubeconfig(default_path, new_doc, cluster_name=ctx.cluster)
+        ctx.log.info(
+            step="kubeconfig_merged",
+            path=str(default_path),
+            cluster=ctx.cluster,
+            current_context=ctx.cluster,
+            source=str(cluster_kubeconfig),
+        )
 
     # Best-effort summary.
     tunnel = container.apiserver_tunnel
     local_port = tunnel.local_port if tunnel is not None and use_tunnel else None
-    print(f"\nKubeconfig written to {output_path}")
+    if args.output is not None:
+        output_str = str(args.output.expanduser().resolve())
+    else:
+        output_str = str(Path(os.environ.get("KUBECONFIG") or "~/.kube/config").expanduser())
+    print(f"\nKubeconfig written to {output_str}")
     print(f"Server URL: https://{cp_ip}:6443" + (f"  (via 127.0.0.1:{local_port} tunnel)" if local_port else ""))
     print(
         "Quickstart:\n"
-        f"  KUBECONFIG={output_path} kubectl get nodes\n"
-        f"  KUBECONFIG={output_path} kubectl get pods -A"
+        f"  kubectl get nodes --context {ctx.cluster}\n"
+        f"  kubectl get pods -A --context {ctx.cluster}"
     )
     if local_port is not None:
         print(
@@ -367,6 +408,53 @@ def cmd_kubeconfig(args: argparse.Namespace) -> int:
             "breaks all kubectl calls until you re-run this command."
         )
     return EXIT_OK
+
+
+def merge_kubeconfig(path: Path, new_doc: dict, *, cluster_name: str) -> None:
+    """Merge `new_doc` into the YAML kubeconfig at `path` (in place).
+
+    Idempotent on re-run: re-merging a cluster with the same
+    `cluster_name` overwrites its cluster/user/context entries
+    instead of duplicating. Sets `current-context: <cluster_name>`
+    so `kubectl` points at the freshly-merged cluster.
+
+    If `path` does not yet exist, write `new_doc` as the initial
+    contents (caller is responsible for setting
+    `current-context` to the freshly-merged cluster in that case).
+    """
+    if path.exists():
+        text = path.read_text()
+        try:
+            existing = yaml.safe_load(text)
+        except yaml.YAMLError:
+            existing = None
+        if not isinstance(existing, dict):
+            existing = {}
+    else:
+        existing = {}
+
+    # Defensive: drop None entries that kubectl chokes on.
+    new_cluster = new_doc.get("clusters") or []
+    new_users = new_doc.get("users") or []
+    new_contexts = new_doc.get("contexts") or []
+
+    clusters = [c for c in (existing.get("clusters") or []) if isinstance(c, dict) and c.get("name") != cluster_name]
+    clusters.extend(new_cluster)
+    users = [u for u in (existing.get("users") or []) if isinstance(u, dict) and u.get("name") != cluster_name]
+    users.extend(new_users)
+    contexts = [c for c in (existing.get("contexts") or []) if isinstance(c, dict) and c.get("name") != cluster_name]
+    contexts.extend(new_contexts)
+
+    merged = {
+        "apiVersion": existing.get("apiVersion", "v1"),
+        "kind": existing.get("kind", "Config"),
+        "preferences": existing.get("preferences", {}),
+        "clusters": clusters,
+        "users": users,
+        "contexts": contexts,
+        "current-context": cluster_name,
+    }
+    path.write_text(yaml.safe_dump(merged, sort_keys=False))
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -437,18 +525,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_kc = sub.add_parser(
         "kubeconfig",
         help=(
-            "Fetch the cluster's admin kubeconfig and copy it to a local path. "
-            "By default the server URL is rewritten to the CP's internal IP "
-            "(operator must have a route to it). Use --use-tunnel to route "
-            "through the SSH port-forward plumbing instead."
+            "Fetch the cluster's admin kubeconfig and merge it into the "
+            "operator's local kubeconf (~/.kube/config, or $KUBECONFIG if "
+            "set). Re-runs are idempotent — existing entries for the same "
+            "cluster name are replaced in place. By default the server URL "
+            "is rewritten to the CP's internal IP (operator must have a "
+            "route to it). Use --use-tunnel to route through the SSH port-"
+            "forward plumbing instead. Pass --output to write the kubeconfig "
+            "to a standalone file instead of merging."
         ),
     )
     p_kc.add_argument("cluster")
     p_kc.add_argument(
         "--output",
         type=Path,
-        default=Path.home() / ".kube" / "config",
-        help="Where to write the kubeconfig (default: ~/.kube/config).",
+        default=None,
+        help=(
+            "Write the kubeconfig to this path instead of merging into the "
+            "operator's local kubeconf (~/.kube/config, or $KUBECONFIG if "
+            "set). The file is overwritten if it already exists."
+        ),
     )
     p_kc.add_argument(
         "--use-tunnel",
