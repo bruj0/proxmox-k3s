@@ -1,11 +1,14 @@
-"""provisioner CLI — `bootstrap plan|apply|destroy|validate <cluster>`.
+"""provisioner CLI — `bootstrap plan|apply|destroy|validate|kubeconfig <cluster>`.
 
 Subcommands (mirrors proxmox-vms/provisioner/cli.py):
 
-  bootstrap plan    <cluster>     # diff desired vs live cluster (no mutations)
-  bootstrap apply   <cluster>     # run every selected phase; idempotent
-  bootstrap destroy <cluster>     # remove the cluster's state
-  bootstrap validate <cluster>    # parse main.tf + verify upstream output.json
+  bootstrap plan        <cluster>     # diff desired vs live cluster (no mutations)
+  bootstrap apply       <cluster>     # run every selected phase; idempotent
+  bootstrap destroy     <cluster>     # remove the cluster's state
+  bootstrap validate    <cluster>     # parse main.tf + verify upstream output.json
+  bootstrap kubeconfig  <cluster>     # fetch + copy the admin kubeconfig to a local path
+                                       # (default uses CP's internal IP; --use-tunnel
+                                       # routes through the SSH port-forward)
 
 Exit codes (mirrors proxmox-vms):
    0  success
@@ -223,6 +226,149 @@ def cmd_destroy(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_kubeconfig(args: argparse.Namespace) -> int:
+    """Fetch the cluster's admin kubeconfig and copy it to a local path.
+
+    By default the kubeconfig is rewritten so its `server:` URL
+    is the cluster's internal CP IP (e.g. https://10.0.0.64:6443)
+    — handy when the operator host already has a route to the
+    SDN. k3s bakes the in-cluster kubeconfig with
+    `server: https://127.0.0.1:6443` which doesn't resolve from
+    outside the cluster; we normalize it to the CP's internal IP.
+
+    With `--use-tunnel`, the kubeconfig is instead routed through
+    the same SSH port-forward plumbing the bootstrap uses
+    internally (apiserver_ready + kubeconfig_pull phases), so
+    `server:` becomes `https://127.0.0.1:<local_port>` and the
+    tunnel lives for the lifetime of this process.
+    """
+    ctx = _resolve_ctx(args, subcommand="kubeconfig")
+    if not ctx.cluster_dir.exists():
+        ctx.log.error(
+            step="prereq_failed",
+            error=f"cluster root not found: {ctx.cluster_dir}",
+            resolution="create infra/clusters/<name>/main.tf",
+        )
+        return EXIT_PREREQ
+
+    output_path: Path = args.output.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_kubeconfig = ctx.cluster_dir / "kubeconfig.yaml"
+    use_tunnel: bool = bool(args.use_tunnel)
+
+    intent = parse_intent(ctx.cluster_dir / "main.tf")
+    container = Container.production(
+        logger=ctx.log,
+        repo_root=ctx.repo_root,
+        cluster_dir=ctx.cluster_dir,
+        cluster_name=ctx.cluster,
+        kubeconfig=cluster_kubeconfig,
+        ssh_proxy_target=os.environ.get("PVE_SSH_TARGET", "root@kvm.bruj0.net -p 6022"),
+        env_file=ctx.repo_root / ".env",
+    )
+    container.cluster_intent = intent
+
+    try:
+        build_topology(container=container, proxmox_vms_repo=ctx.proxmox_vms_repo)
+    except BootstrapError as exc:
+        ctx.log.error(step="prereq_failed", error=str(exc), resolution="run proxmox-vms apply first")
+        return EXIT_PREREQ
+
+    topo = container.upstream_topology
+    if topo is None or not topo.control_plane:
+        ctx.log.error(step="prereq_failed", error="no control plane in upstream topology", resolution="run proxmox-vms apply first")
+        return EXIT_PREREQ
+    cp_ip = topo.control_plane[0].ip
+
+    if use_tunnel:
+        # Default bootstrap path: re-run the apiserver_ready +
+        # kubeconfig_pull phases (idempotent if previously done;
+        # the state-store will short-circuit). The phase opens the
+        # tunnel and writes cluster_dir/kubeconfig.yaml with the
+        # rewritten 127.0.0.1:<local_port> server URL.
+        selected = ("apiserver_ready", "kubeconfig_pull")
+        try:
+            run_orchestrator(container, selected_phases=selected)
+        except BootstrapError as exc:
+            ctx.log.error(step="kubeconfig_failed", error=str(exc), resolution="see detail")
+            return EXIT_PHASE
+
+        if not cluster_kubeconfig.exists():
+            ctx.log.error(
+                step="kubeconfig_missing",
+                error=f"phase completed but {cluster_kubeconfig} was not written",
+                resolution="check apiserver readiness + tunnel logs above",
+            )
+            return EXIT_PHASE
+
+        written = cluster_kubeconfig.read_text()
+        ctx.log.info(step="kubeconfig_written", path=str(cluster_kubeconfig), mode="tunnel")
+    else:
+        # Direct path: SSH to the CP, fetch the raw kubeconfig,
+        # and normalize the server URL to the CP's internal IP.
+        # No tunnel is opened — the operator must already have a
+        # route to <cp.ip>:6443 (typical for operators on the
+        # same SDN or with a VPN into the lab).
+        fetch = container.remote.run(
+            cp_ip,
+            "sudo cat /etc/rancher/k3s/k3s.yaml",
+            check=False,
+            timeout=15.0,
+        )
+        if fetch.exit_code != 0 or "apiVersion" not in fetch.stdout:
+            ctx.log.error(
+                step="kubeconfig_fetch_failed",
+                stderr=fetch.stderr.strip(),
+                exit_code=fetch.exit_code,
+                resolution=f"verify ssh proxy + that k3s is running on {cp_ip}",
+            )
+            return EXIT_PHASE
+
+        raw = fetch.stdout
+        # k3s uses 127.0.0.1 (in-cluster); rewrite to the CP's LAN IP.
+        rewritten = raw.replace(
+            "server: https://127.0.0.1:6443",
+            f"server: https://{cp_ip}:6443",
+        )
+        if rewritten == raw:
+            # No rewrite needed — CP already uses its own IP.
+            rewritten = raw
+
+        cluster_kubeconfig.write_text(rewritten)
+        ctx.log.info(
+            step="kubeconfig_written",
+            path=str(cluster_kubeconfig),
+            mode="direct",
+            cp_ip=cp_ip,
+        )
+        written = rewritten
+
+    # Copy to the user-requested output path.
+    output_path.write_text(written)
+    ctx.log.info(
+        step="kubeconfig_copied",
+        path=str(output_path),
+        source=str(cluster_kubeconfig),
+    )
+
+    # Best-effort summary.
+    tunnel = container.apiserver_tunnel
+    local_port = tunnel.local_port if tunnel is not None and use_tunnel else None
+    print(f"\nKubeconfig written to {output_path}")
+    print(f"Server URL: https://{cp_ip}:6443" + (f"  (via 127.0.0.1:{local_port} tunnel)" if local_port else ""))
+    print(
+        "Quickstart:\n"
+        f"  KUBECONFIG={output_path} kubectl get nodes\n"
+        f"  KUBECONFIG={output_path} kubectl get pods -A"
+    )
+    if local_port is not None:
+        print(
+            "Note: the tunnel lives in this process. Closing it (ctrl-c)\n"
+            "breaks all kubectl calls until you re-run this command."
+        )
+    return EXIT_OK
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     ctx = _resolve_ctx(args, subcommand="validate")
     if not ctx.cluster_dir.exists():
@@ -287,6 +433,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_val = sub.add_parser("validate", help="Parse main.tf + verify upstream output.json (no SSH).")
     p_val.add_argument("cluster")
     p_val.set_defaults(func=cmd_validate)
+
+    p_kc = sub.add_parser(
+        "kubeconfig",
+        help=(
+            "Fetch the cluster's admin kubeconfig and copy it to a local path. "
+            "By default the server URL is rewritten to the CP's internal IP "
+            "(operator must have a route to it). Use --use-tunnel to route "
+            "through the SSH port-forward plumbing instead."
+        ),
+    )
+    p_kc.add_argument("cluster")
+    p_kc.add_argument(
+        "--output",
+        type=Path,
+        default=Path.home() / ".kube" / "config",
+        help="Where to write the kubeconfig (default: ~/.kube/config).",
+    )
+    p_kc.add_argument(
+        "--use-tunnel",
+        action="store_true",
+        help=(
+            "Open an SSH port-forward through the PVE proxy and rewrite the "
+            "kubeconfig's server URL to https://127.0.0.1:<ephemeral>. The "
+            "tunnel lives for the lifetime of this process."
+        ),
+    )
+    p_kc.set_defaults(func=cmd_kubeconfig)
 
     return parser
 
