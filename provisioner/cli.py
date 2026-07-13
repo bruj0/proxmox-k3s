@@ -357,17 +357,24 @@ def cmd_kubeconfig(args: argparse.Namespace) -> int:
         )
         return EXIT_PHASE
 
+    # Rename cluster/user/context entries from whatever k3s baked
+    # (typically "default") to the operator-provided cluster name so
+    # the local kubeconf has e.g. clusters[0].name == "cicd" and
+    # contexts[0].name == "cicd" — matching `bootstrap <verb> cicd`.
+    rename_kubeconfig_names(new_doc, cluster_name=ctx.cluster)
+
     if args.output is not None:
         # Explicit output path — overwrite the file with the
         # rewritten kubeconfig (this is the "I want a standalone
         # kubeconfig file" mode). No merging.
         output_path: Path = args.output.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(written)
+        output_path.write_text(yaml.safe_dump(new_doc, sort_keys=False))
         ctx.log.info(
             step="kubeconfig_written",
             path=str(output_path),
             mode="standalone",
+            cluster=ctx.cluster,
             source=str(cluster_kubeconfig),
         )
     else:
@@ -406,6 +413,39 @@ def cmd_kubeconfig(args: argparse.Namespace) -> int:
             "breaks all kubectl calls until you re-run this command."
         )
     return EXIT_OK
+
+
+def rename_kubeconfig_names(doc: dict, *, cluster_name: str) -> None:
+    """In-place: rewrite `clusters[].name`, `users[].name`, and
+    `contexts[].name` (plus the cluster/user references inside
+    contexts) to `cluster_name`.
+
+    k3s bakes /etc/rancher/k3s/k3s.yaml with cluster/user/context
+    names set to "default" (with the context's cluster and user
+    fields also pointing at "default"). The operator however picks
+    a real name for the cluster via `bootstrap <verb> cicd` /
+    `apps` / etc., so the merged kubeconf needs the entries keyed
+    by that name to match the cluster they actually came from.
+
+    Idempotent: if the doc's names already equal `cluster_name`,
+    this is a no-op.
+    """
+    if not isinstance(doc, dict):
+        return
+    for entry in doc.get("clusters") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            entry["name"] = cluster_name
+    for entry in doc.get("users") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            entry["name"] = cluster_name
+    for entry in doc.get("contexts") or []:
+        if not isinstance(entry, dict):
+            continue
+        entry["name"] = cluster_name
+        ctx_inner = entry.get("context")
+        if isinstance(ctx_inner, dict):
+            ctx_inner["cluster"] = cluster_name
+            ctx_inner["user"] = cluster_name
 
 
 def merge_kubeconfig(path: Path, new_doc: dict, *, cluster_name: str) -> None:
