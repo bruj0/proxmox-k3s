@@ -254,8 +254,6 @@ def cmd_kubeconfig(args: argparse.Namespace) -> int:
         )
         return EXIT_PREREQ
 
-    output_path: Path = args.output.expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     cluster_kubeconfig = ctx.cluster_dir / "kubeconfig.yaml"
     use_tunnel: bool = bool(args.use_tunnel)
 
